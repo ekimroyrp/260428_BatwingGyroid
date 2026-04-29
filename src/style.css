@@ -64,6 +64,11 @@ input {
   pointer-events: none;
 }
 
+.lattice-marquee.is-deselecting {
+  border-color: rgba(67, 117, 148, 0.9);
+  background: rgba(45, 78, 98, 0.18);
+}
+
 #ui-panel {
   position: absolute;
   top: 18px;

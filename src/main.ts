@@ -131,9 +131,11 @@ type LatticeMarqueeState = {
   startY: number
   currentX: number
   currentY: number
-  additive: boolean
+  mode: LatticeSelectionMode
   active: boolean
 }
+
+type LatticeSelectionMode = 'replace' | 'add' | 'remove'
 
 type LatticeTransformDragState = {
   anchorStartMatrix: THREE.Matrix4
@@ -2403,12 +2405,25 @@ function getSelectedLatticeAverage(): THREE.Vector3 | null {
   return average.multiplyScalar(1 / count)
 }
 
-function selectSingleLatticePoint(index: number, additive: boolean): void {
-  if (!additive) {
+function getLatticeSelectionMode(event: MouseEvent): LatticeSelectionMode {
+  if (event.ctrlKey || event.metaKey) {
+    return 'remove'
+  }
+  return event.shiftKey ? 'add' : 'replace'
+}
+
+function selectSingleLatticePoint(index: number, mode: LatticeSelectionMode): void {
+  if (mode === 'remove') {
+    selectedLatticePointIndices.delete(index)
+    refreshLatticeVisuals()
+    return
+  }
+
+  if (mode === 'replace') {
     selectedLatticePointIndices.clear()
   }
 
-  if (additive && selectedLatticePointIndices.has(index)) {
+  if (mode === 'add' && selectedLatticePointIndices.has(index)) {
     selectedLatticePointIndices.delete(index)
   } else {
     selectedLatticePointIndices.add(index)
@@ -2417,8 +2432,16 @@ function selectSingleLatticePoint(index: number, additive: boolean): void {
   refreshLatticeVisuals()
 }
 
-function selectLatticePoints(indices: readonly number[], additive: boolean): void {
-  if (!additive) {
+function selectLatticePoints(indices: readonly number[], mode: LatticeSelectionMode): void {
+  if (mode === 'remove') {
+    for (const index of indices) {
+      selectedLatticePointIndices.delete(index)
+    }
+    refreshLatticeVisuals()
+    return
+  }
+
+  if (mode === 'replace') {
     selectedLatticePointIndices.clear()
   }
 
@@ -2444,9 +2467,10 @@ function onLatticePointerDown(event: PointerEvent): void {
   }
 
   const hitIndex = pickLatticePoint(event)
+  const selectionMode = getLatticeSelectionMode(event)
   if (hitIndex !== null) {
     event.preventDefault()
-    selectSingleLatticePoint(hitIndex, event.shiftKey)
+    selectSingleLatticePoint(hitIndex, selectionMode)
     return
   }
 
@@ -2456,7 +2480,7 @@ function onLatticePointerDown(event: PointerEvent): void {
     startY: event.clientY,
     currentX: event.clientX,
     currentY: event.clientY,
-    additive: event.shiftKey,
+    mode: selectionMode,
     active: false,
   }
   canvas.setPointerCapture(event.pointerId)
@@ -2515,8 +2539,8 @@ function onLatticePointerUp(event: PointerEvent): void {
   }
 
   if (marqueeState.active) {
-    selectLatticePoints(getLatticePointsInMarquee(marqueeState), marqueeState.additive)
-  } else if (!marqueeState.additive) {
+    selectLatticePoints(getLatticePointsInMarquee(marqueeState), marqueeState.mode)
+  } else if (marqueeState.mode === 'replace') {
     clearLatticeSelection()
   }
 
@@ -2537,6 +2561,7 @@ function finishLatticeMarquee(pointerId: number): void {
   }
   latticeMarqueeState = null
   latticeMarquee.hidden = true
+  latticeMarquee.classList.remove('is-deselecting')
 }
 
 function isLatticeTransformPointerActive(): boolean {
@@ -2574,6 +2599,7 @@ function updateLatticeMarqueeElement(marqueeState: LatticeMarqueeState): void {
   latticeMarquee.style.top = `${top}px`
   latticeMarquee.style.width = `${width}px`
   latticeMarquee.style.height = `${height}px`
+  latticeMarquee.classList.toggle('is-deselecting', marqueeState.mode === 'remove')
 }
 
 function getLatticePointsInMarquee(marqueeState: LatticeMarqueeState): number[] {
