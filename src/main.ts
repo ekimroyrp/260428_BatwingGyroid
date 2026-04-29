@@ -20,6 +20,13 @@ type SliderBinding = {
   valueInput: HTMLInputElement
 }
 
+type BatwingAppState = {
+  settings: BatwingSettings
+  showWireframe: boolean
+  reflectionsEnabled: boolean
+  showBoxGuide: boolean
+}
+
 type BatwingMaterialStyle = {
   color: number
   metalness: number
@@ -67,6 +74,7 @@ declare global {
 document.title = '260428_BatwingGyroid'
 
 const EXPORT_BASE_NAME = '260428_BatwingGyroid'
+const MAX_HISTORY_STATES = 100
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
   t1: 0.5,
@@ -146,28 +154,28 @@ app.innerHTML = `
           <div class="panel-section-content panel-controls-stack">
             <label class="control" for="t0Slider">
               <div class="control-row">
-                <span>T0</span>
+                <span>Vert Positions 1</span>
                 <input id="t0-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t0Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t1Slider">
               <div class="control-row">
-                <span>T1</span>
+                <span>Vert Positions 2</span>
                 <input id="t1-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t1Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t2Slider">
               <div class="control-row">
-                <span>T2</span>
+                <span>Vert Positions 3</span>
                 <input id="t2-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t2Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t3Slider">
               <div class="control-row">
-                <span>T3</span>
+                <span>Vert Positions 4</span>
                 <input id="t3-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t3Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
@@ -504,6 +512,18 @@ const exportCounters = {
 const panelDragOffset = { x: 0, y: 0 }
 let panelDragging = false
 let animationFrameId = 0
+let pendingControlHistoryState: BatwingAppState | null = null
+let isApplyingHistoryState = false
+const undoHistory: BatwingAppState[] = []
+const redoHistory: BatwingAppState[] = []
+
+app.addEventListener(
+  'contextmenu',
+  (event) => {
+    event.preventDefault()
+  },
+  { capture: true },
+)
 
 function readSliderNumber(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseFloat(input.value)
@@ -584,6 +604,121 @@ function getCurrentSettings(): BatwingSettings {
   )
 }
 
+function cloneSettings(settings: BatwingSettings): BatwingSettings {
+  return {
+    t0: settings.t0,
+    t1: settings.t1,
+    t2: settings.t2,
+    t3: settings.t3,
+  }
+}
+
+function cloneAppState(state: BatwingAppState): BatwingAppState {
+  return {
+    settings: cloneSettings(state.settings),
+    showWireframe: state.showWireframe,
+    reflectionsEnabled: state.reflectionsEnabled,
+    showBoxGuide: state.showBoxGuide,
+  }
+}
+
+function captureAppState(): BatwingAppState {
+  return {
+    settings: getCurrentSettings(),
+    showWireframe: wireToggle.checked,
+    reflectionsEnabled: reflectionToggle.checked,
+    showBoxGuide: boxGuideToggle.checked,
+  }
+}
+
+function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
+  return (
+    a.settings.t0 === b.settings.t0 &&
+    a.settings.t1 === b.settings.t1 &&
+    a.settings.t2 === b.settings.t2 &&
+    a.settings.t3 === b.settings.t3 &&
+    a.showWireframe === b.showWireframe &&
+    a.reflectionsEnabled === b.reflectionsEnabled &&
+    a.showBoxGuide === b.showBoxGuide
+  )
+}
+
+function pushUndoHistoryState(state: BatwingAppState): void {
+  undoHistory.push(cloneAppState(state))
+  if (undoHistory.length > MAX_HISTORY_STATES) {
+    undoHistory.shift()
+  }
+}
+
+function commitHistoryCheckpoint(previousState: BatwingAppState): void {
+  if (isApplyingHistoryState) {
+    return
+  }
+
+  const currentState = captureAppState()
+  if (appStatesEqual(previousState, currentState)) {
+    return
+  }
+
+  pushUndoHistoryState(previousState)
+  redoHistory.length = 0
+}
+
+function beginControlHistoryEdit(): void {
+  if (isApplyingHistoryState || pendingControlHistoryState) {
+    return
+  }
+
+  pendingControlHistoryState = captureAppState()
+}
+
+function finishControlHistoryEdit(): void {
+  if (!pendingControlHistoryState) {
+    return
+  }
+
+  commitHistoryCheckpoint(pendingControlHistoryState)
+  pendingControlHistoryState = null
+}
+
+function clearControlHistoryEdit(): void {
+  pendingControlHistoryState = null
+}
+
+function applyAppState(state: BatwingAppState): void {
+  isApplyingHistoryState = true
+  applySettings(state.settings)
+  wireToggle.checked = state.showWireframe
+  wireOverlay.visible = state.showWireframe
+  reflectionToggle.checked = state.reflectionsEnabled
+  applyMaterialStyle(state.reflectionsEnabled ? FOIL_MATERIAL_STYLE : MATTE_MATERIAL_STYLE)
+  boxGuideToggle.checked = state.showBoxGuide
+  boxGuide.visible = state.showBoxGuide
+  isApplyingHistoryState = false
+}
+
+function undoHistoryState(): void {
+  finishControlHistoryEdit()
+  const previousState = undoHistory.pop()
+  if (!previousState) {
+    return
+  }
+
+  redoHistory.push(captureAppState())
+  applyAppState(previousState)
+}
+
+function redoHistoryState(): void {
+  finishControlHistoryEdit()
+  const nextState = redoHistory.pop()
+  if (!nextState) {
+    return
+  }
+
+  pushUndoHistoryState(captureAppState())
+  applyAppState(nextState)
+}
+
 function applySettings(settings: BatwingSettings): void {
   for (const binding of sliderBindings) {
     const nextValue = snapValueToSlider(settings[binding.key], binding.slider)
@@ -609,25 +744,44 @@ function commitValueInput(binding: SliderBinding): void {
 
 function bindSlider(binding: SliderBinding): void {
   const syncFromSlider = (): void => {
+    beginControlHistoryEdit()
     const value = readSliderNumber(binding.slider, binding.fallback)
     binding.valueInput.value = formatSliderValue(value)
     updateRangeProgress(binding.slider)
     rebuildBatwing()
   }
 
+  binding.slider.addEventListener('pointerdown', beginControlHistoryEdit)
+  binding.slider.addEventListener('pointerup', finishControlHistoryEdit)
+  binding.slider.addEventListener('pointercancel', finishControlHistoryEdit)
+  binding.slider.addEventListener('keydown', (event) => {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+      beginControlHistoryEdit()
+    }
+  })
   binding.slider.addEventListener('input', syncFromSlider)
-  binding.valueInput.addEventListener('change', () => commitValueInput(binding))
-  binding.valueInput.addEventListener('blur', () => commitValueInput(binding))
+  binding.slider.addEventListener('change', finishControlHistoryEdit)
+  binding.valueInput.addEventListener('focus', beginControlHistoryEdit)
+  binding.valueInput.addEventListener('change', () => {
+    commitValueInput(binding)
+    finishControlHistoryEdit()
+  })
+  binding.valueInput.addEventListener('blur', () => {
+    commitValueInput(binding)
+    finishControlHistoryEdit()
+  })
   binding.valueInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
       commitValueInput(binding)
+      finishControlHistoryEdit()
       binding.valueInput.blur()
     }
 
     if (event.key === 'Escape') {
       event.preventDefault()
       binding.valueInput.value = formatSliderValue(readSliderNumber(binding.slider, binding.fallback))
+      clearControlHistoryEdit()
       binding.valueInput.blur()
     }
   })
@@ -1012,15 +1166,24 @@ for (const binding of sliderBindings) {
 }
 
 wireToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.showWireframe = !wireToggle.checked
   wireOverlay.visible = wireToggle.checked
+  commitHistoryCheckpoint(previousState)
 })
 
 reflectionToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.reflectionsEnabled = !reflectionToggle.checked
   applyMaterialStyle(reflectionToggle.checked ? FOIL_MATERIAL_STYLE : MATTE_MATERIAL_STYLE)
+  commitHistoryCheckpoint(previousState)
 })
 
 boxGuideToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.showBoxGuide = !boxGuideToggle.checked
   boxGuide.visible = boxGuideToggle.checked
+  commitHistoryCheckpoint(previousState)
 })
 
 exportObjButton.addEventListener('click', exportObj)
@@ -1076,6 +1239,27 @@ updateGeometryDataset()
 onResize()
 window.addEventListener('resize', onResize)
 window.addEventListener('beforeunload', cleanup)
+window.addEventListener('keydown', (event) => {
+  if (!event.ctrlKey || event.altKey) {
+    return
+  }
+
+  const key = event.key.toLowerCase()
+  if (key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) {
+      redoHistoryState()
+    } else {
+      undoHistoryState()
+    }
+    return
+  }
+
+  if (key === 'y' && !event.shiftKey) {
+    event.preventDefault()
+    redoHistoryState()
+  }
+})
 
 window.__batwingDebug = {
   getStats: getCurrentGeometryStats,
