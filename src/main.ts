@@ -73,6 +73,7 @@ type BatwingAppState = {
   showWireframe: boolean
   reflectionsEnabled: boolean
   showBoxGuide: boolean
+  showBackFaces: boolean
 }
 
 type BatwingMaterialStyle = {
@@ -97,11 +98,13 @@ type BatwingMaterialStyle = {
 type EggIridescenceState = {
   strength: number
   frequency: number
+  backFacesEnabled: boolean
   uniforms:
     | null
     | {
         uEggIridescence: { value: number }
         uEggIridescenceFrequency: { value: number }
+        uBackFaceDiagnostic: { value: number }
       }
 }
 
@@ -393,6 +396,10 @@ app.innerHTML = `
               <span>Foil Material</span>
               <input id="reflectionToggle" type="checkbox" checked />
             </label>
+            <label class="toggle-control" for="backFacesToggle">
+              <span>Back Faces</span>
+              <input id="backFacesToggle" type="checkbox" />
+            </label>
           </div>
         </section>
         <section class="panel-section">
@@ -501,6 +508,7 @@ const baseGridToggle = requireElement<HTMLInputElement>('#baseGridToggle')
 const wireToggle = requireElement<HTMLInputElement>('#wireToggle')
 const reflectionToggle = requireElement<HTMLInputElement>('#reflectionToggle')
 const boxGuideToggle = requireElement<HTMLInputElement>('#boxGuideToggle')
+const backFacesToggle = requireElement<HTMLInputElement>('#backFacesToggle')
 
 const sliderBindings: SliderBinding[] = [
   {
@@ -737,6 +745,7 @@ scene.add(amberAccentLight)
 const eggIridescenceState: EggIridescenceState = {
   strength: FOIL_MATERIAL_STYLE.eggIridescence,
   frequency: FOIL_MATERIAL_STYLE.eggIridescenceFrequency,
+  backFacesEnabled: backFacesToggle.checked,
   uniforms: null,
 }
 
@@ -1018,6 +1027,7 @@ function cloneAppState(state: BatwingAppState): BatwingAppState {
     showWireframe: state.showWireframe,
     reflectionsEnabled: state.reflectionsEnabled,
     showBoxGuide: state.showBoxGuide,
+    showBackFaces: state.showBackFaces,
   }
 }
 
@@ -1031,6 +1041,7 @@ function captureAppState(): BatwingAppState {
     showWireframe: wireToggle.checked,
     reflectionsEnabled: reflectionToggle.checked,
     showBoxGuide: boxGuideToggle.checked,
+    showBackFaces: backFacesToggle.checked,
   }
 }
 
@@ -1052,7 +1063,8 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.showBaseGrid === b.showBaseGrid &&
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
-    a.showBoxGuide === b.showBoxGuide
+    a.showBoxGuide === b.showBoxGuide &&
+    a.showBackFaces === b.showBackFaces
   )
 }
 
@@ -1112,6 +1124,8 @@ function applyAppState(state: BatwingAppState): void {
   applyMaterialStyle(state.reflectionsEnabled ? FOIL_MATERIAL_STYLE : MATTE_MATERIAL_STYLE)
   boxGuideToggle.checked = state.showBoxGuide
   boxGuide.visible = state.showBoxGuide
+  backFacesToggle.checked = state.showBackFaces
+  applyBackFacesDiagnosticMode(state.showBackFaces)
   isApplyingHistoryState = false
 }
 
@@ -3067,19 +3081,28 @@ function applyMaterialStyle(style: BatwingMaterialStyle): void {
   batwingMesh.material.needsUpdate = true
 }
 
+function applyBackFacesDiagnosticMode(enabled: boolean): void {
+  eggIridescenceState.backFacesEnabled = enabled
+  if (eggIridescenceState.uniforms) {
+    eggIridescenceState.uniforms.uBackFaceDiagnostic.value = enabled ? 1 : 0
+  }
+}
+
 function installEggIridescenceShader(
   material: THREE.MeshPhysicalMaterial,
   state: EggIridescenceState,
 ): void {
-  material.customProgramCacheKey = () => 'batwing-gyroid-foil-iridescence-v1'
+  material.customProgramCacheKey = () => 'batwing-gyroid-foil-iridescence-v2'
   material.onBeforeCompile = (shader) => {
     const uniforms = {
       uEggIridescence: { value: state.strength },
       uEggIridescenceFrequency: { value: state.frequency },
+      uBackFaceDiagnostic: { value: state.backFacesEnabled ? 1 : 0 },
     }
     state.uniforms = uniforms
     shader.uniforms.uEggIridescence = uniforms.uEggIridescence
     shader.uniforms.uEggIridescenceFrequency = uniforms.uEggIridescenceFrequency
+    shader.uniforms.uBackFaceDiagnostic = uniforms.uBackFaceDiagnostic
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -3101,6 +3124,7 @@ vEggIriWorldNormal = normalize( mat3( modelMatrix ) * normal );`,
         `#include <common>
 uniform float uEggIridescence;
 uniform float uEggIridescenceFrequency;
+uniform float uBackFaceDiagnostic;
 varying vec3 vEggIriWorldPosition;
 varying vec3 vEggIriWorldNormal;
 
@@ -3209,6 +3233,13 @@ vec3 applyEggIridescence(vec3 baseColor) {
         '#include <color_fragment>',
         `#include <color_fragment>
 diffuseColor.rgb = applyEggIridescence(diffuseColor.rgb);`,
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `#include <opaque_fragment>
+if (uBackFaceDiagnostic > 0.5) {
+  gl_FragColor = vec4(gl_FrontFacing ? vec3(1.0) : vec3(1.0, 0.0, 0.85), diffuseColor.a);
+}`,
       )
   }
 }
@@ -3446,6 +3477,13 @@ reflectionToggle.addEventListener('change', () => {
   const previousState = captureAppState()
   previousState.reflectionsEnabled = !reflectionToggle.checked
   applyMaterialStyle(reflectionToggle.checked ? FOIL_MATERIAL_STYLE : MATTE_MATERIAL_STYLE)
+  commitHistoryCheckpoint(previousState)
+})
+
+backFacesToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.showBackFaces = !backFacesToggle.checked
+  applyBackFacesDiagnosticMode(backFacesToggle.checked)
   commitHistoryCheckpoint(previousState)
 })
 
