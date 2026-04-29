@@ -20,8 +20,24 @@ type SliderBinding = {
   valueInput: HTMLInputElement
 }
 
+type BatwingArraySettings = {
+  lengthCount: number
+  widthCount: number
+  heightCount: number
+}
+
+type ArrayControlKey = keyof BatwingArraySettings
+
+type ArraySliderBinding = {
+  key: ArrayControlKey
+  fallback: number
+  slider: HTMLInputElement
+  valueInput: HTMLInputElement
+}
+
 type BatwingAppState = {
   settings: BatwingSettings
+  arraySettings: BatwingArraySettings
   showWireframe: boolean
   reflectionsEnabled: boolean
   showBoxGuide: boolean
@@ -75,11 +91,18 @@ document.title = '260428_BatwingGyroid'
 
 const EXPORT_BASE_NAME = '260428_BatwingGyroid'
 const MAX_HISTORY_STATES = 100
+const MAX_ARRAY_COUNT = 20
+const MAX_ARRAY_INSTANCES = MAX_ARRAY_COUNT * MAX_ARRAY_COUNT * MAX_ARRAY_COUNT
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
   t1: 0.5,
   t2: 0.5,
   t3: 0.5,
+}
+const DEFAULT_ARRAY_SETTINGS: BatwingArraySettings = {
+  lengthCount: 1,
+  widthCount: 1,
+  heightCount: 1,
 }
 
 const FOIL_MATERIAL_STYLE: BatwingMaterialStyle = {
@@ -179,6 +202,34 @@ app.innerHTML = `
                 <input id="t3-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t3Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+            </label>
+          </div>
+        </section>
+        <section class="panel-section">
+          <button class="panel-section-header" type="button" aria-expanded="true">
+            <span class="panel-section-label">Array</span>
+          </button>
+          <div class="panel-section-content panel-controls-stack">
+            <label class="control" for="lengthCountSlider">
+              <div class="control-row">
+                <span>Length Count</span>
+                <input id="length-count-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="lengthCountSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="widthCountSlider">
+              <div class="control-row">
+                <span>Width Count</span>
+                <input id="width-count-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="widthCountSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="heightCountSlider">
+              <div class="control-row">
+                <span>Height Count</span>
+                <input id="height-count-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="heightCountSlider" type="range" min="1" max="20" value="1" step="1" />
             </label>
           </div>
         </section>
@@ -350,6 +401,27 @@ const sliderBindings: SliderBinding[] = [
   },
 ]
 
+const arraySliderBindings: ArraySliderBinding[] = [
+  {
+    key: 'lengthCount',
+    fallback: DEFAULT_ARRAY_SETTINGS.lengthCount,
+    slider: requireElement<HTMLInputElement>('#lengthCountSlider'),
+    valueInput: requireElement<HTMLInputElement>('#length-count-value'),
+  },
+  {
+    key: 'widthCount',
+    fallback: DEFAULT_ARRAY_SETTINGS.widthCount,
+    slider: requireElement<HTMLInputElement>('#widthCountSlider'),
+    valueInput: requireElement<HTMLInputElement>('#width-count-value'),
+  },
+  {
+    key: 'heightCount',
+    fallback: DEFAULT_ARRAY_SETTINGS.heightCount,
+    slider: requireElement<HTMLInputElement>('#heightCountSlider'),
+    valueInput: requireElement<HTMLInputElement>('#height-count-value'),
+  },
+]
+
 const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
@@ -392,7 +464,7 @@ const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
 controls.target.set(0, 0, 0)
 controls.minDistance = 3
-controls.maxDistance = 80
+controls.maxDistance = Number.POSITIVE_INFINITY
 controls.maxPolarAngle = Math.PI - 0.01
 controls.mouseButtons.LEFT = -1 as THREE.MOUSE
 controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN
@@ -469,13 +541,19 @@ const batwingMaterial = new THREE.MeshPhysicalMaterial({
 })
 installEggIridescenceShader(batwingMaterial, eggIridescenceState)
 
-const batwingMesh = new THREE.Mesh(buildBatwingGeometry(DEFAULT_SETTINGS), batwingMaterial)
+const batwingMesh = new THREE.InstancedMesh(
+  buildBatwingGeometry(DEFAULT_SETTINGS),
+  batwingMaterial,
+  MAX_ARRAY_INSTANCES,
+)
 batwingMesh.castShadow = true
 batwingMesh.receiveShadow = true
+batwingMesh.frustumCulled = false
+syncArrayInstances(DEFAULT_ARRAY_SETTINGS)
 scene.add(batwingMesh)
 
 const wireOverlay = new THREE.LineSegments(
-  buildBatwingWireGeometry(DEFAULT_SETTINGS),
+  buildArrayWireGeometry(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS),
   new THREE.LineBasicMaterial({
     color: 0x37506c,
     transparent: true,
@@ -490,7 +568,7 @@ wireOverlay.renderOrder = 3
 scene.add(wireOverlay)
 
 const boxGuide = new THREE.LineSegments(
-  createBatwingBoxGuideGeometry(),
+  buildArrayBoxGuideGeometry(DEFAULT_ARRAY_SETTINGS),
   new THREE.LineBasicMaterial({
     color: 0xffd47a,
     transparent: true,
@@ -528,6 +606,11 @@ app.addEventListener(
 function readSliderNumber(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseFloat(input.value)
   return Number.isFinite(value) ? value : fallback
+}
+
+function readArraySliderNumber(input: HTMLInputElement, fallback: number): number {
+  const value = Math.round(readSliderNumber(input, fallback))
+  return clampNumber(value, 1, MAX_ARRAY_COUNT)
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -604,6 +687,16 @@ function getCurrentSettings(): BatwingSettings {
   )
 }
 
+function getCurrentArraySettings(): BatwingArraySettings {
+  return arraySliderBindings.reduce<BatwingArraySettings>(
+    (settings, binding) => {
+      settings[binding.key] = readArraySliderNumber(binding.slider, binding.fallback)
+      return settings
+    },
+    { ...DEFAULT_ARRAY_SETTINGS },
+  )
+}
+
 function cloneSettings(settings: BatwingSettings): BatwingSettings {
   return {
     t0: settings.t0,
@@ -613,9 +706,18 @@ function cloneSettings(settings: BatwingSettings): BatwingSettings {
   }
 }
 
+function cloneArraySettings(settings: BatwingArraySettings): BatwingArraySettings {
+  return {
+    lengthCount: settings.lengthCount,
+    widthCount: settings.widthCount,
+    heightCount: settings.heightCount,
+  }
+}
+
 function cloneAppState(state: BatwingAppState): BatwingAppState {
   return {
     settings: cloneSettings(state.settings),
+    arraySettings: cloneArraySettings(state.arraySettings),
     showWireframe: state.showWireframe,
     reflectionsEnabled: state.reflectionsEnabled,
     showBoxGuide: state.showBoxGuide,
@@ -625,6 +727,7 @@ function cloneAppState(state: BatwingAppState): BatwingAppState {
 function captureAppState(): BatwingAppState {
   return {
     settings: getCurrentSettings(),
+    arraySettings: getCurrentArraySettings(),
     showWireframe: wireToggle.checked,
     reflectionsEnabled: reflectionToggle.checked,
     showBoxGuide: boxGuideToggle.checked,
@@ -637,6 +740,9 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.settings.t1 === b.settings.t1 &&
     a.settings.t2 === b.settings.t2 &&
     a.settings.t3 === b.settings.t3 &&
+    a.arraySettings.lengthCount === b.arraySettings.lengthCount &&
+    a.arraySettings.widthCount === b.arraySettings.widthCount &&
+    a.arraySettings.heightCount === b.arraySettings.heightCount &&
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
     a.showBoxGuide === b.showBoxGuide
@@ -688,6 +794,7 @@ function clearControlHistoryEdit(): void {
 function applyAppState(state: BatwingAppState): void {
   isApplyingHistoryState = true
   applySettings(state.settings)
+  applyArraySettings(state.arraySettings)
   wireToggle.checked = state.showWireframe
   wireOverlay.visible = state.showWireframe
   reflectionToggle.checked = state.reflectionsEnabled
@@ -730,6 +837,17 @@ function applySettings(settings: BatwingSettings): void {
   rebuildBatwing()
 }
 
+function applyArraySettings(settings: BatwingArraySettings): void {
+  for (const binding of arraySliderBindings) {
+    const nextValue = Math.round(snapValueToSlider(settings[binding.key], binding.slider))
+    binding.slider.value = `${nextValue}`
+    binding.valueInput.value = `${nextValue}`
+    updateRangeProgress(binding.slider)
+  }
+
+  rebuildBatwing()
+}
+
 function commitValueInput(binding: SliderBinding): void {
   const parsedValue = Number.parseFloat(binding.valueInput.value)
   const nextValue = snapValueToSlider(
@@ -738,6 +856,17 @@ function commitValueInput(binding: SliderBinding): void {
   )
   binding.slider.value = `${nextValue}`
   binding.valueInput.value = formatSliderValue(nextValue)
+  updateRangeProgress(binding.slider)
+  rebuildBatwing()
+}
+
+function commitArrayValueInput(binding: ArraySliderBinding): void {
+  const parsedValue = Number.parseFloat(binding.valueInput.value)
+  const nextValue = Math.round(
+    snapValueToSlider(Number.isFinite(parsedValue) ? parsedValue : binding.fallback, binding.slider),
+  )
+  binding.slider.value = `${nextValue}`
+  binding.valueInput.value = `${nextValue}`
   updateRangeProgress(binding.slider)
   rebuildBatwing()
 }
@@ -787,17 +916,150 @@ function bindSlider(binding: SliderBinding): void {
   })
 }
 
+function bindArraySlider(binding: ArraySliderBinding): void {
+  const syncFromSlider = (): void => {
+    beginControlHistoryEdit()
+    const value = readArraySliderNumber(binding.slider, binding.fallback)
+    binding.slider.value = `${value}`
+    binding.valueInput.value = `${value}`
+    updateRangeProgress(binding.slider)
+    rebuildBatwing()
+  }
+
+  binding.slider.addEventListener('pointerdown', beginControlHistoryEdit)
+  binding.slider.addEventListener('pointerup', finishControlHistoryEdit)
+  binding.slider.addEventListener('pointercancel', finishControlHistoryEdit)
+  binding.slider.addEventListener('keydown', (event) => {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+      beginControlHistoryEdit()
+    }
+  })
+  binding.slider.addEventListener('input', syncFromSlider)
+  binding.slider.addEventListener('change', finishControlHistoryEdit)
+  binding.valueInput.addEventListener('focus', beginControlHistoryEdit)
+  binding.valueInput.addEventListener('change', () => {
+    commitArrayValueInput(binding)
+    finishControlHistoryEdit()
+  })
+  binding.valueInput.addEventListener('blur', () => {
+    commitArrayValueInput(binding)
+    finishControlHistoryEdit()
+  })
+  binding.valueInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commitArrayValueInput(binding)
+      finishControlHistoryEdit()
+      binding.valueInput.blur()
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      binding.valueInput.value = `${readArraySliderNumber(binding.slider, binding.fallback)}`
+      clearControlHistoryEdit()
+      binding.valueInput.blur()
+    }
+  })
+}
+
 function rebuildBatwing(): void {
   const settings = getCurrentSettings()
+  const arraySettings = getCurrentArraySettings()
   const nextGeometry = buildBatwingGeometry(settings)
-  const nextWireGeometry = buildBatwingWireGeometry(settings)
+  const nextWireGeometry = buildArrayWireGeometry(settings, arraySettings)
 
   batwingMesh.geometry.dispose()
   batwingMesh.geometry = nextGeometry
+  syncArrayInstances(arraySettings)
 
   wireOverlay.geometry.dispose()
   wireOverlay.geometry = nextWireGeometry
+
+  boxGuide.geometry.dispose()
+  boxGuide.geometry = buildArrayBoxGuideGeometry(arraySettings)
   updateGeometryDataset()
+}
+
+function getArrayInstanceCount(settings: BatwingArraySettings): number {
+  return settings.lengthCount * settings.widthCount * settings.heightCount
+}
+
+function getArrayOffset(
+  lengthIndex: number,
+  widthIndex: number,
+  heightIndex: number,
+  settings: BatwingArraySettings,
+): THREE.Vector3 {
+  return new THREE.Vector3(
+    (widthIndex - (settings.widthCount - 1) / 2) * BATWING_BOX_DIMENSIONS.width,
+    heightIndex * BATWING_BOX_DIMENSIONS.height,
+    (lengthIndex - (settings.lengthCount - 1) / 2) * BATWING_BOX_DIMENSIONS.depth,
+  )
+}
+
+function forEachArrayOffset(
+  settings: BatwingArraySettings,
+  callback: (offset: THREE.Vector3, instanceIndex: number) => void,
+): void {
+  let instanceIndex = 0
+
+  for (let heightIndex = 0; heightIndex < settings.heightCount; heightIndex += 1) {
+    for (let widthIndex = 0; widthIndex < settings.widthCount; widthIndex += 1) {
+      for (let lengthIndex = 0; lengthIndex < settings.lengthCount; lengthIndex += 1) {
+        callback(getArrayOffset(lengthIndex, widthIndex, heightIndex, settings), instanceIndex)
+        instanceIndex += 1
+      }
+    }
+  }
+}
+
+function syncArrayInstances(settings: BatwingArraySettings): void {
+  const matrix = new THREE.Matrix4()
+  batwingMesh.count = getArrayInstanceCount(settings)
+  forEachArrayOffset(settings, (offset, instanceIndex) => {
+    matrix.makeTranslation(offset.x, offset.y, offset.z)
+    batwingMesh.setMatrixAt(instanceIndex, matrix)
+  })
+  batwingMesh.instanceMatrix.needsUpdate = true
+  batwingMesh.computeBoundingSphere()
+}
+
+function buildArrayLineGeometry(baseGeometry: THREE.BufferGeometry, settings: BatwingArraySettings): THREE.BufferGeometry {
+  const basePosition = baseGeometry.getAttribute('position') as THREE.BufferAttribute
+  const instanceCount = getArrayInstanceCount(settings)
+  const positions = new Float32Array(basePosition.count * instanceCount * 3)
+
+  forEachArrayOffset(settings, (offset, instanceIndex) => {
+    const instanceOffset = instanceIndex * basePosition.count * 3
+    for (let vertexIndex = 0; vertexIndex < basePosition.count; vertexIndex += 1) {
+      const targetIndex = instanceOffset + vertexIndex * 3
+      positions[targetIndex + 0] = basePosition.getX(vertexIndex) + offset.x
+      positions[targetIndex + 1] = basePosition.getY(vertexIndex) + offset.y
+      positions[targetIndex + 2] = basePosition.getZ(vertexIndex) + offset.z
+    }
+  })
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+function buildArrayWireGeometry(
+  settings: BatwingSettings,
+  arraySettings: BatwingArraySettings,
+): THREE.BufferGeometry {
+  const baseGeometry = buildBatwingWireGeometry(settings)
+  const geometry = buildArrayLineGeometry(baseGeometry, arraySettings)
+  baseGeometry.dispose()
+  return geometry
+}
+
+function buildArrayBoxGuideGeometry(arraySettings: BatwingArraySettings): THREE.BufferGeometry {
+  const baseGeometry = createBatwingBoxGuideGeometry()
+  const geometry = buildArrayLineGeometry(baseGeometry, arraySettings)
+  baseGeometry.dispose()
+  return geometry
 }
 
 function applyMaterialStyle(style: BatwingMaterialStyle): void {
@@ -970,26 +1232,54 @@ diffuseColor.rgb = applyEggIridescence(diffuseColor.rgb);`,
   }
 }
 
-function getExportSourceMesh(): THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial> {
-  batwingMesh.updateWorldMatrix(true, false)
-  return batwingMesh
-}
-
 function getPrimaryMaterialColor(material: THREE.Material): THREE.Color {
   const colorCarrier = material as THREE.Material & { color?: THREE.Color }
   return colorCarrier.color?.clone() ?? new THREE.Color(0xf1f5ff)
 }
 
 function buildExportMesh(): THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> {
-  const sourceMesh = getExportSourceMesh()
-  const exportGeometry = sourceMesh.geometry.clone()
-  exportGeometry.applyMatrix4(sourceMesh.matrixWorld)
+  batwingMesh.updateWorldMatrix(true, false)
+
+  const sourceGeometry = batwingMesh.geometry
+  const sourcePosition = sourceGeometry.getAttribute('position') as THREE.BufferAttribute
+  const sourceIndex = sourceGeometry.getIndex()
+  const instanceCount = batwingMesh.count
+  const positions = new Float32Array(sourcePosition.count * instanceCount * 3)
+  const indices: number[] = []
+  const instanceMatrix = new THREE.Matrix4()
+  const finalMatrix = new THREE.Matrix4()
+  const transformedPosition = new THREE.Vector3()
+
+  for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
+    batwingMesh.getMatrixAt(instanceIndex, instanceMatrix)
+    finalMatrix.multiplyMatrices(batwingMesh.matrixWorld, instanceMatrix)
+
+    for (let vertexIndex = 0; vertexIndex < sourcePosition.count; vertexIndex += 1) {
+      transformedPosition.fromBufferAttribute(sourcePosition, vertexIndex).applyMatrix4(finalMatrix)
+      const targetIndex = (instanceIndex * sourcePosition.count + vertexIndex) * 3
+      positions[targetIndex + 0] = transformedPosition.x
+      positions[targetIndex + 1] = transformedPosition.y
+      positions[targetIndex + 2] = transformedPosition.z
+    }
+
+    const indexOffset = instanceIndex * sourcePosition.count
+    if (sourceIndex) {
+      for (let indexOffsetSource = 0; indexOffsetSource < sourceIndex.count; indexOffsetSource += 1) {
+        indices.push(indexOffset + sourceIndex.getX(indexOffsetSource))
+      }
+    }
+  }
+
+  const exportGeometry = new THREE.BufferGeometry()
+  exportGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  exportGeometry.setIndex(indices)
   exportGeometry.computeVertexNormals()
+  exportGeometry.computeBoundingSphere()
 
   const exportMaterial = new THREE.MeshStandardMaterial({
-    color: getPrimaryMaterialColor(sourceMesh.material),
-    metalness: sourceMesh.material.metalness,
-    roughness: sourceMesh.material.roughness,
+    color: getPrimaryMaterialColor(batwingMesh.material),
+    metalness: batwingMesh.material.metalness,
+    roughness: batwingMesh.material.roughness,
     side: THREE.DoubleSide,
   })
 
@@ -1162,6 +1452,11 @@ function cleanup(): void {
 
 for (const binding of sliderBindings) {
   bindSlider(binding)
+  updateRangeProgress(binding.slider)
+}
+
+for (const binding of arraySliderBindings) {
+  bindArraySlider(binding)
   updateRangeProgress(binding.slider)
 }
 
