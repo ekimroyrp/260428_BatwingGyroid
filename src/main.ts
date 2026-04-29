@@ -1,6 +1,7 @@
 import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import {
   BATWING_BOX_DIMENSIONS,
@@ -41,6 +42,23 @@ type ArraySliderBinding = {
   valueInput: HTMLInputElement
 }
 
+type BatwingLatticeSettings = {
+  lengthDivisions: number
+  widthDivisions: number
+  heightDivisions: number
+}
+
+type LatticeControlKey = keyof BatwingLatticeSettings
+
+type LatticeSliderBinding = {
+  key: LatticeControlKey
+  fallback: number
+  min: number
+  max: number
+  slider: HTMLInputElement
+  valueInput: HTMLInputElement
+}
+
 type BatwingGeometrySet = {
   meshGeometry: THREE.BufferGeometry
   wireGeometry: THREE.BufferGeometry
@@ -49,6 +67,8 @@ type BatwingGeometrySet = {
 type BatwingAppState = {
   settings: BatwingSettings
   arraySettings: BatwingArraySettings
+  latticeSettings: BatwingLatticeSettings
+  latticePointPositions: number[] | null
   showBaseGrid: boolean
   showWireframe: boolean
   reflectionsEnabled: boolean
@@ -85,6 +105,51 @@ type EggIridescenceState = {
       }
 }
 
+type LatticePoint = {
+  index: number
+  widthIndex: number
+  heightIndex: number
+  lengthIndex: number
+  restPosition: THREE.Vector3
+  position: THREE.Vector3
+}
+
+type LatticeState = {
+  settings: BatwingLatticeSettings
+  bounds: THREE.Box3
+  size: THREE.Vector3
+  points: LatticePoint[]
+}
+
+type LatticeMarqueeState = {
+  pointerId: number
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+  additive: boolean
+  active: boolean
+}
+
+type LatticeTransformDragState = {
+  anchorStartMatrix: THREE.Matrix4
+  anchorStartInverse: THREE.Matrix4
+  pointStartPositions: Map<number, THREE.Vector3>
+}
+
+type LatticeTransformControlHandle = {
+  control: TransformControls
+  helper: THREE.Object3D
+}
+
+type TransformControlsInternalGizmo = TransformControls & {
+  _gizmo?: {
+    gizmo?: Record<string, THREE.Object3D>
+    picker?: Record<string, THREE.Object3D>
+    helper?: Record<string, THREE.Object3D>
+  }
+}
+
 declare global {
   interface Window {
     __batwingDebug?: {
@@ -106,7 +171,17 @@ const MAX_HISTORY_STATES = 100
 const MAX_ARRAY_COUNT = 20
 const MAX_THICKNESS = 1
 const MAX_SUBDIVISIONS = 3
+const MAX_LATTICE_DIVISIONS = 20
 const WELD_EPSILON = 1e-5
+const LATTICE_POINT_SIZE = 0.055
+const LATTICE_MARQUEE_THRESHOLD = 4
+const LATTICE_COLOR = new THREE.Color(0xd100ff)
+const LATTICE_SELECTED_COLOR = new THREE.Color(0xff7a00)
+const LATTICE_LINE_COLOR = 0xffd47a
+const BOX_GUIDE_COLOR = 0x4aaed5
+const SCALE_EPSILON = 1e-4
+const BACK_SCALE_HANDLE_OFFSET = 0.4
+const TRANSLATE_ARROW_HEAD_SCALE = 2 / 3
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
   t1: 0.5,
@@ -119,6 +194,11 @@ const DEFAULT_ARRAY_SETTINGS: BatwingArraySettings = {
   heightCount: 1,
   thickness: 0,
   subdivisions: 0,
+}
+const DEFAULT_LATTICE_SETTINGS: BatwingLatticeSettings = {
+  lengthDivisions: 1,
+  widthDivisions: 1,
+  heightDivisions: 1,
 }
 
 const FOIL_MATERIAL_STYLE: BatwingMaterialStyle = {
@@ -172,6 +252,7 @@ const app = document.querySelector<HTMLDivElement>('#app') ?? (() => {
 app.innerHTML = `
   <div class="app-shell">
     <canvas class="viewport" aria-label="Batwing mesh viewport"></canvas>
+    <div id="lattice-marquee" class="lattice-marquee" hidden></div>
     <section id="ui-panel" class="apple-panel" aria-label="Batwing mesh controls">
       <div id="ui-handle" class="panel-drag-handle">
         <button
@@ -218,6 +299,34 @@ app.innerHTML = `
                 <input id="t3-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
               </div>
               <input id="t3Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+            </label>
+          </div>
+        </section>
+        <section class="panel-section">
+          <button class="panel-section-header" type="button" aria-expanded="true">
+            <span class="panel-section-label">Lattice</span>
+          </button>
+          <div class="panel-section-content panel-controls-stack">
+            <label class="control" for="lengthDivisionSlider">
+              <div class="control-row">
+                <span>Length Division</span>
+                <input id="length-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="lengthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="widthDivisionSlider">
+              <div class="control-row">
+                <span>Width Division</span>
+                <input id="width-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="widthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="heightDivisionSlider">
+              <div class="control-row">
+                <span>Height Division</span>
+                <input id="height-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="heightDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
             </label>
           </div>
         </section>
@@ -381,6 +490,7 @@ function createStudioReflectionEnvironment(renderer: THREE.WebGLRenderer): THREE
 }
 
 const canvas = requireElement<HTMLCanvasElement>('.viewport')
+const latticeMarquee = requireElement<HTMLDivElement>('#lattice-marquee')
 const uiPanel = requireElement<HTMLDivElement>('#ui-panel')
 const uiHandleTop = requireElement<HTMLDivElement>('#ui-handle')
 const collapseToggle = requireElement<HTMLButtonElement>('#collapseToggle')
@@ -467,6 +577,33 @@ const arraySliderBindings: ArraySliderBinding[] = [
   },
 ]
 
+const latticeSliderBindings: LatticeSliderBinding[] = [
+  {
+    key: 'lengthDivisions',
+    fallback: DEFAULT_LATTICE_SETTINGS.lengthDivisions,
+    min: 1,
+    max: MAX_LATTICE_DIVISIONS,
+    slider: requireElement<HTMLInputElement>('#lengthDivisionSlider'),
+    valueInput: requireElement<HTMLInputElement>('#length-division-value'),
+  },
+  {
+    key: 'widthDivisions',
+    fallback: DEFAULT_LATTICE_SETTINGS.widthDivisions,
+    min: 1,
+    max: MAX_LATTICE_DIVISIONS,
+    slider: requireElement<HTMLInputElement>('#widthDivisionSlider'),
+    valueInput: requireElement<HTMLInputElement>('#width-division-value'),
+  },
+  {
+    key: 'heightDivisions',
+    fallback: DEFAULT_LATTICE_SETTINGS.heightDivisions,
+    min: 1,
+    max: MAX_LATTICE_DIVISIONS,
+    slider: requireElement<HTMLInputElement>('#heightDivisionSlider'),
+    valueInput: requireElement<HTMLInputElement>('#height-division-value'),
+  },
+]
+
 const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
@@ -515,6 +652,37 @@ controls.maxPolarAngle = Math.PI - 0.01
 controls.mouseButtons.LEFT = -1 as THREE.MOUSE
 controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN
 controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE
+
+let currentSourceQuadMesh: QuadMeshData | null = null
+let latticeState: LatticeState | null = null
+let latticePointMesh: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null
+let latticeHighlightPointMesh: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null
+let latticeLineSegments: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial> | null = null
+let latticeMarqueeState: LatticeMarqueeState | null = null
+let latticeTransformDragState: LatticeTransformDragState | null = null
+let isUsingLatticeTransformControls = false
+let isLatticeTransformDragging = false
+let hoveredLatticePointIndex: number | null = null
+const selectedLatticePointIndices = new Set<number>()
+const latticeRaycaster = new THREE.Raycaster()
+const latticePointer = new THREE.Vector2()
+const latticeProjection = new THREE.Vector3()
+const latticeMatrixHelper = new THREE.Object3D()
+const latticeTransformAnchor = new THREE.Object3D()
+latticeTransformAnchor.visible = false
+scene.add(latticeTransformAnchor)
+
+const latticeTransformControlHandles = [
+  createLatticeTransformControl('translate', 1.0),
+  createLatticeTransformControl('rotate', 0.5),
+  createLatticeTransformControl('scale', 0.42),
+]
+const latticeTransformControls = latticeTransformControlHandles.map(({ control }) => control)
+const latticeTransformControlHelpers = latticeTransformControlHandles.map(({ helper }) => helper)
+latticeTransformControlHandles.forEach(({ control, helper }) => {
+  control.attach(latticeTransformAnchor)
+  helper.visible = false
+})
 
 const ambientLight = new THREE.HemisphereLight(0xdfe9ff, 0x11151d, 0.34)
 scene.add(ambientLight)
@@ -619,7 +787,7 @@ scene.add(wireOverlay)
 const boxGuide = new THREE.LineSegments(
   buildArrayBoxGuideGeometry(DEFAULT_ARRAY_SETTINGS),
   new THREE.LineBasicMaterial({
-    color: 0xffd47a,
+    color: BOX_GUIDE_COLOR,
     transparent: true,
     opacity: 0.5,
     depthWrite: false,
@@ -630,6 +798,7 @@ boxGuide.visible = boxGuideToggle.checked
 boxGuide.renderOrder = 2
 scene.add(boxGuide)
 
+rebuildLatticeFromCurrentSource()
 updateLightingForCurrentGeometry()
 
 const exportCounters = {
@@ -663,6 +832,10 @@ function readArraySliderNumber(binding: ArraySliderBinding): number {
   return normalizeArraySliderValue(binding, readSliderNumber(binding.slider, binding.fallback))
 }
 
+function readLatticeSliderNumber(binding: LatticeSliderBinding): number {
+  return normalizeLatticeSliderValue(binding, readSliderNumber(binding.slider, binding.fallback))
+}
+
 function normalizeArraySliderValue(binding: ArraySliderBinding, value: number): number {
   const safeValue = Number.isFinite(value) ? value : binding.fallback
   const clampedValue = clampNumber(safeValue, binding.min, binding.max)
@@ -671,8 +844,19 @@ function normalizeArraySliderValue(binding: ArraySliderBinding, value: number): 
   return clampNumber(nextValue, binding.min, binding.max)
 }
 
+function normalizeLatticeSliderValue(binding: LatticeSliderBinding, value: number): number {
+  const safeValue = Number.isFinite(value) ? value : binding.fallback
+  const clampedValue = clampNumber(safeValue, binding.min, binding.max)
+  const snappedValue = snapValueToSlider(clampedValue, binding.slider)
+  return Math.round(clampNumber(snappedValue, binding.min, binding.max))
+}
+
 function formatArraySliderValue(binding: ArraySliderBinding, value: number): string {
   return binding.integer ? `${Math.round(value)}` : formatSliderValue(value)
+}
+
+function formatLatticeSliderValue(value: number): string {
+  return `${Math.round(value)}`
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -759,6 +943,16 @@ function getCurrentArraySettings(): BatwingArraySettings {
   )
 }
 
+function getCurrentLatticeSettings(): BatwingLatticeSettings {
+  return latticeSliderBindings.reduce<BatwingLatticeSettings>(
+    (settings, binding) => {
+      settings[binding.key] = readLatticeSliderNumber(binding)
+      return settings
+    },
+    { ...DEFAULT_LATTICE_SETTINGS },
+  )
+}
+
 function cloneSettings(settings: BatwingSettings): BatwingSettings {
   return {
     t0: settings.t0,
@@ -778,10 +972,48 @@ function cloneArraySettings(settings: BatwingArraySettings): BatwingArraySetting
   }
 }
 
+function cloneLatticeSettings(settings: BatwingLatticeSettings): BatwingLatticeSettings {
+  return {
+    lengthDivisions: settings.lengthDivisions,
+    widthDivisions: settings.widthDivisions,
+    heightDivisions: settings.heightDivisions,
+  }
+}
+
+function captureLatticePointPositions(): number[] | null {
+  if (!latticeState) {
+    return null
+  }
+
+  const positions: number[] = []
+  for (const point of latticeState.points) {
+    positions.push(point.position.x, point.position.y, point.position.z)
+  }
+  return positions
+}
+
+function latticePointPositionsEqual(a: number[] | null, b: number[] | null): boolean {
+  if (a === b) {
+    return true
+  }
+  if (!a || !b || a.length !== b.length) {
+    return false
+  }
+
+  for (let index = 0; index < a.length; index += 1) {
+    if (Math.abs(a[index] - b[index]) > 1e-8) {
+      return false
+    }
+  }
+  return true
+}
+
 function cloneAppState(state: BatwingAppState): BatwingAppState {
   return {
     settings: cloneSettings(state.settings),
     arraySettings: cloneArraySettings(state.arraySettings),
+    latticeSettings: cloneLatticeSettings(state.latticeSettings),
+    latticePointPositions: state.latticePointPositions ? [...state.latticePointPositions] : null,
     showBaseGrid: state.showBaseGrid,
     showWireframe: state.showWireframe,
     reflectionsEnabled: state.reflectionsEnabled,
@@ -793,6 +1025,8 @@ function captureAppState(): BatwingAppState {
   return {
     settings: getCurrentSettings(),
     arraySettings: getCurrentArraySettings(),
+    latticeSettings: getCurrentLatticeSettings(),
+    latticePointPositions: captureLatticePointPositions(),
     showBaseGrid: baseGridToggle.checked,
     showWireframe: wireToggle.checked,
     reflectionsEnabled: reflectionToggle.checked,
@@ -811,6 +1045,10 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.arraySettings.heightCount === b.arraySettings.heightCount &&
     a.arraySettings.thickness === b.arraySettings.thickness &&
     a.arraySettings.subdivisions === b.arraySettings.subdivisions &&
+    a.latticeSettings.lengthDivisions === b.latticeSettings.lengthDivisions &&
+    a.latticeSettings.widthDivisions === b.latticeSettings.widthDivisions &&
+    a.latticeSettings.heightDivisions === b.latticeSettings.heightDivisions &&
+    latticePointPositionsEqual(a.latticePointPositions, b.latticePointPositions) &&
     a.showBaseGrid === b.showBaseGrid &&
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
@@ -864,6 +1102,8 @@ function applyAppState(state: BatwingAppState): void {
   isApplyingHistoryState = true
   applySettings(state.settings)
   applyArraySettings(state.arraySettings)
+  applyLatticeSettings(state.latticeSettings)
+  applyLatticePointPositions(state.latticePointPositions)
   baseGridToggle.checked = state.showBaseGrid
   groundGrid.mesh.visible = state.showBaseGrid
   wireToggle.checked = state.showWireframe
@@ -919,6 +1159,34 @@ function applyArraySettings(settings: BatwingArraySettings): void {
   rebuildBatwing()
 }
 
+function applyLatticeSettings(settings: BatwingLatticeSettings): void {
+  for (const binding of latticeSliderBindings) {
+    const nextValue = normalizeLatticeSliderValue(binding, settings[binding.key])
+    binding.slider.value = `${nextValue}`
+    binding.valueInput.value = formatLatticeSliderValue(nextValue)
+    updateRangeProgress(binding.slider)
+  }
+
+  rebuildBatwing()
+}
+
+function applyLatticePointPositions(positions: number[] | null): void {
+  if (!latticeState || !positions || positions.length !== latticeState.points.length * 3) {
+    return
+  }
+
+  for (let index = 0; index < latticeState.points.length; index += 1) {
+    latticeState.points[index].position.set(
+      positions[index * 3 + 0],
+      positions[index * 3 + 1],
+      positions[index * 3 + 2],
+    )
+  }
+
+  refreshLatticeVisuals()
+  rebuildCurrentDeformedGeometry()
+}
+
 function commitValueInput(binding: SliderBinding): void {
   const parsedValue = Number.parseFloat(binding.valueInput.value)
   const nextValue = snapValueToSlider(
@@ -936,6 +1204,15 @@ function commitArrayValueInput(binding: ArraySliderBinding): void {
   const nextValue = normalizeArraySliderValue(binding, parsedValue)
   binding.slider.value = `${nextValue}`
   binding.valueInput.value = formatArraySliderValue(binding, nextValue)
+  updateRangeProgress(binding.slider)
+  rebuildBatwing()
+}
+
+function commitLatticeValueInput(binding: LatticeSliderBinding): void {
+  const parsedValue = Number.parseFloat(binding.valueInput.value)
+  const nextValue = normalizeLatticeSliderValue(binding, parsedValue)
+  binding.slider.value = `${nextValue}`
+  binding.valueInput.value = formatLatticeSliderValue(nextValue)
   updateRangeProgress(binding.slider)
   rebuildBatwing()
 }
@@ -1031,10 +1308,59 @@ function bindArraySlider(binding: ArraySliderBinding): void {
   })
 }
 
+function bindLatticeSlider(binding: LatticeSliderBinding): void {
+  const syncFromSlider = (): void => {
+    beginControlHistoryEdit()
+    const value = readLatticeSliderNumber(binding)
+    binding.slider.value = `${value}`
+    binding.valueInput.value = formatLatticeSliderValue(value)
+    updateRangeProgress(binding.slider)
+    rebuildBatwing()
+  }
+
+  binding.slider.addEventListener('pointerdown', beginControlHistoryEdit)
+  binding.slider.addEventListener('pointerup', finishControlHistoryEdit)
+  binding.slider.addEventListener('pointercancel', finishControlHistoryEdit)
+  binding.slider.addEventListener('keydown', (event) => {
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+      beginControlHistoryEdit()
+    }
+  })
+  binding.slider.addEventListener('input', syncFromSlider)
+  binding.slider.addEventListener('change', finishControlHistoryEdit)
+  binding.valueInput.addEventListener('focus', beginControlHistoryEdit)
+  binding.valueInput.addEventListener('change', () => {
+    commitLatticeValueInput(binding)
+    finishControlHistoryEdit()
+  })
+  binding.valueInput.addEventListener('blur', () => {
+    commitLatticeValueInput(binding)
+    finishControlHistoryEdit()
+  })
+  binding.valueInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commitLatticeValueInput(binding)
+      finishControlHistoryEdit()
+      binding.valueInput.blur()
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      binding.valueInput.value = formatLatticeSliderValue(readLatticeSliderNumber(binding))
+      clearControlHistoryEdit()
+      binding.valueInput.blur()
+    }
+  })
+}
+
 function rebuildBatwing(): void {
   const settings = getCurrentSettings()
   const arraySettings = getCurrentArraySettings()
-  const nextGeometrySet = buildBatwingGeometrySet(settings, arraySettings)
+  const sourceQuadMesh = buildSubdividedWeldedArrayQuadMesh(settings, arraySettings)
+  currentSourceQuadMesh = cloneQuadMeshData(sourceQuadMesh)
+  rebuildLatticeFromCurrentSource()
+  const nextGeometrySet = buildGeometrySetFromQuadMesh(applyLatticeDeformation(sourceQuadMesh), arraySettings)
 
   batwingMesh.geometry.dispose()
   batwingMesh.geometry = nextGeometrySet.meshGeometry
@@ -1044,6 +1370,22 @@ function rebuildBatwing(): void {
 
   boxGuide.geometry.dispose()
   boxGuide.geometry = buildArrayBoxGuideGeometry(arraySettings)
+  updateLightingForCurrentGeometry()
+  updateGeometryDataset()
+}
+
+function rebuildCurrentDeformedGeometry(): void {
+  const sourceQuadMesh = currentSourceQuadMesh
+  if (!sourceQuadMesh) {
+    return
+  }
+
+  const arraySettings = getCurrentArraySettings()
+  const nextGeometrySet = buildGeometrySetFromQuadMesh(applyLatticeDeformation(sourceQuadMesh), arraySettings)
+  batwingMesh.geometry.dispose()
+  batwingMesh.geometry = nextGeometrySet.meshGeometry
+  wireOverlay.geometry.dispose()
+  wireOverlay.geometry = nextGeometrySet.wireGeometry
   updateLightingForCurrentGeometry()
   updateGeometryDataset()
 }
@@ -1144,10 +1486,1007 @@ function buildBatwingGeometrySet(
   arraySettings: BatwingArraySettings,
 ): BatwingGeometrySet {
   const quadMesh = buildSubdividedWeldedArrayQuadMesh(settings, arraySettings)
+  currentSourceQuadMesh = cloneQuadMeshData(quadMesh)
+  return buildGeometrySetFromQuadMesh(quadMesh, arraySettings)
+}
+
+function buildGeometrySetFromQuadMesh(
+  quadMesh: QuadMeshData,
+  arraySettings: BatwingArraySettings,
+): BatwingGeometrySet {
   return {
     meshGeometry: buildGeometryFromQuadMesh(quadMesh, arraySettings),
     wireGeometry: buildQuadWireGeometry(quadMesh),
   }
+}
+
+function cloneQuadMeshData(quadMesh: QuadMeshData): QuadMeshData {
+  return {
+    vertices: quadMesh.vertices.map((vertex) => vertex.clone()),
+    quadFaces: quadMesh.quadFaces.map(([a, b, c, d]) => [a, b, c, d]),
+  }
+}
+
+function createLatticeTransformControl(
+  mode: 'translate' | 'rotate' | 'scale',
+  size: number,
+): LatticeTransformControlHandle {
+  const control = new TransformControls(camera, renderer.domElement)
+  control.setMode(mode)
+  control.setSpace('local')
+  control.setSize(size)
+  control.addEventListener('dragging-changed', () => {
+    if (control.dragging) {
+      setExclusiveLatticeTransformControl(control)
+    } else {
+      setExclusiveLatticeTransformControl(null)
+    }
+    updateLatticeTransformDraggingState()
+  })
+  control.addEventListener('mouseDown', () => {
+    if (!getLatticeTransformControlAxis(control)) {
+      return
+    }
+    beginLatticeTransformDrag(control)
+    isUsingLatticeTransformControls = true
+  })
+  control.addEventListener('objectChange', updateLatticeTransformDrag)
+  control.addEventListener('mouseUp', () => {
+    finishLatticeTransformDrag()
+    window.setTimeout(() => {
+      isUsingLatticeTransformControls = false
+      setExclusiveLatticeTransformControl(null)
+    }, 0)
+  })
+
+  const helper = control.getHelper()
+  helper.renderOrder = 8
+  stripNonAxisTransformHandles(control, mode)
+  if (mode === 'translate') {
+    stripTranslateBackArrows(control)
+    resizeTranslateArrowHeads(control, TRANSLATE_ARROW_HEAD_SCALE)
+  }
+  if (mode === 'scale') {
+    pushBackScaleHandles(control, BACK_SCALE_HANDLE_OFFSET)
+  }
+  scene.add(helper)
+  return { control, helper }
+}
+
+function stripNonAxisTransformHandles(
+  control: TransformControls,
+  mode: 'translate' | 'rotate' | 'scale',
+): void {
+  const allowedNames = mode === 'scale' ? new Set(['X', 'Y', 'Z', 'XYZ']) : new Set(['X', 'Y', 'Z'])
+  const gizmo = (control as TransformControlsInternalGizmo)._gizmo
+  if (!gizmo) {
+    return
+  }
+
+  const helperGroup = gizmo.helper?.[mode]
+  if (helperGroup) {
+    for (const child of [...helperGroup.children]) {
+      helperGroup.remove(child)
+    }
+  }
+
+  const groups: Array<THREE.Object3D | undefined> = [gizmo.gizmo?.[mode], gizmo.picker?.[mode]]
+  for (const group of groups) {
+    if (!group) {
+      continue
+    }
+
+    const toRemove = group.children.filter((child) => !allowedNames.has(child.name))
+    for (const child of toRemove) {
+      group.remove(child)
+    }
+  }
+}
+
+function stripTranslateBackArrows(control: TransformControls): void {
+  const axisVectors: Record<'X' | 'Y' | 'Z', THREE.Vector3> = {
+    X: new THREE.Vector3(1, 0, 0),
+    Y: new THREE.Vector3(0, 1, 0),
+    Z: new THREE.Vector3(0, 0, 1),
+  }
+  const gizmo = (control as TransformControlsInternalGizmo)._gizmo
+  if (!gizmo) {
+    return
+  }
+
+  const groups: Array<THREE.Object3D | undefined> = [gizmo.gizmo?.translate, gizmo.picker?.translate]
+  for (const group of groups) {
+    if (!group) {
+      continue
+    }
+
+    for (const axisName of ['X', 'Y', 'Z'] as const) {
+      const axisChildren = group.children.filter((child) => child.name === axisName)
+      if (axisChildren.length <= 1) {
+        continue
+      }
+
+      const axisVector = axisVectors[axisName]
+      const toRemove: THREE.Object3D[] = []
+      for (const child of axisChildren) {
+        const meshLike = child as THREE.Object3D & { geometry?: THREE.BufferGeometry }
+        const geometry = meshLike.geometry
+        if (!geometry) {
+          continue
+        }
+
+        geometry.computeBoundingBox()
+        const boundingBox = geometry.boundingBox
+        if (!boundingBox) {
+          continue
+        }
+
+        const center = boundingBox.getCenter(new THREE.Vector3())
+        const projection = center.dot(axisVector)
+        if (projection < -1e-4) {
+          toRemove.push(child)
+        }
+      }
+
+      for (const child of toRemove) {
+        group.remove(child)
+      }
+    }
+  }
+}
+
+function resizeTranslateArrowHeads(control: TransformControls, scaleFactor: number): void {
+  const axisVectors: Record<'X' | 'Y' | 'Z', THREE.Vector3> = {
+    X: new THREE.Vector3(1, 0, 0),
+    Y: new THREE.Vector3(0, 1, 0),
+    Z: new THREE.Vector3(0, 0, 1),
+  }
+  const group = (control as TransformControlsInternalGizmo)._gizmo?.gizmo?.translate
+  if (!group) {
+    return
+  }
+
+  for (const axisName of ['X', 'Y', 'Z'] as const) {
+    const axisVector = axisVectors[axisName]
+    for (const child of group.children) {
+      if (child.name !== axisName) {
+        continue
+      }
+
+      const meshLike = child as THREE.Object3D & { geometry?: THREE.BufferGeometry }
+      const geometry = meshLike.geometry
+      if (!geometry) {
+        continue
+      }
+
+      geometry.computeBoundingBox()
+      const boundingBox = geometry.boundingBox
+      if (!boundingBox) {
+        continue
+      }
+
+      const center = boundingBox.getCenter(new THREE.Vector3())
+      const size = boundingBox.getSize(new THREE.Vector3())
+      const maxExtent = Math.max(size.x, size.y, size.z)
+      const minExtent = Math.min(size.x, size.y, size.z)
+      const projection = center.dot(axisVector)
+      const isArrowHead = projection > 0.35 && maxExtent <= 0.16 && minExtent > 0.03
+      if (!isArrowHead) {
+        continue
+      }
+
+      const centerInv = center.clone().multiplyScalar(-1)
+      geometry.translate(centerInv.x, centerInv.y, centerInv.z)
+      geometry.scale(scaleFactor, scaleFactor, scaleFactor)
+      geometry.translate(center.x, center.y, center.z)
+    }
+  }
+}
+
+function pushBackScaleHandles(control: TransformControls, offset: number): void {
+  const axisVectors: Record<'X' | 'Y' | 'Z', THREE.Vector3> = {
+    X: new THREE.Vector3(1, 0, 0),
+    Y: new THREE.Vector3(0, 1, 0),
+    Z: new THREE.Vector3(0, 0, 1),
+  }
+  const gizmo = (control as TransformControlsInternalGizmo)._gizmo
+  if (!gizmo) {
+    return
+  }
+
+  const visualGroup = gizmo.gizmo?.scale
+  if (visualGroup) {
+    pushBackScaleHandleGroup(visualGroup, axisVectors, offset)
+  }
+
+  const pickerGroup = gizmo.picker?.scale
+  if (pickerGroup) {
+    pushBackScaleHandleGroup(pickerGroup, axisVectors, offset)
+  }
+}
+
+function pushBackScaleHandleGroup(
+  group: THREE.Object3D,
+  axisVectors: Record<'X' | 'Y' | 'Z', THREE.Vector3>,
+  offset: number,
+): void {
+  for (const axisName of ['X', 'Y', 'Z'] as const) {
+    const axisVector = axisVectors[axisName]
+    const toRemove: THREE.Object3D[] = []
+    for (const child of group.children) {
+      if (child.name !== axisName) {
+        continue
+      }
+
+      const meshLike = child as THREE.Object3D & { geometry?: THREE.BufferGeometry }
+      const geometry = meshLike.geometry
+      if (!geometry) {
+        continue
+      }
+
+      geometry.computeBoundingBox()
+      const boundingBox = geometry.boundingBox
+      if (!boundingBox) {
+        continue
+      }
+
+      const center = boundingBox.getCenter(new THREE.Vector3())
+      const projection = center.dot(axisVector)
+      if (projection > 1e-4) {
+        toRemove.push(child)
+      } else if (projection < -1e-4) {
+        geometry.translate(-axisVector.x * offset, -axisVector.y * offset, -axisVector.z * offset)
+      }
+    }
+    for (const child of toRemove) {
+      group.remove(child)
+    }
+  }
+}
+
+function beginLatticeTransformDrag(activeControl: TransformControls): void {
+  if (selectedLatticePointIndices.size === 0 || !latticeState || !getLatticeTransformControlAxis(activeControl)) {
+    return
+  }
+
+  beginControlHistoryEdit()
+  setExclusiveLatticeTransformControl(activeControl)
+  latticeTransformAnchor.updateMatrixWorld(true)
+  const anchorStartMatrix = latticeTransformAnchor.matrixWorld.clone()
+  const anchorStartInverse = anchorStartMatrix.clone().invert()
+  const pointStartPositions = new Map<number, THREE.Vector3>()
+  selectedLatticePointIndices.forEach((index) => {
+    const point = latticeState?.points[index]
+    if (point) {
+      pointStartPositions.set(index, point.position.clone())
+    }
+  })
+
+  latticeTransformDragState = {
+    anchorStartMatrix,
+    anchorStartInverse,
+    pointStartPositions,
+  }
+}
+
+function updateLatticeTransformDrag(): void {
+  if (!latticeState || !latticeTransformDragState) {
+    return
+  }
+
+  latticeTransformAnchor.updateMatrixWorld(true)
+  for (const [index, startPosition] of latticeTransformDragState.pointStartPositions) {
+    const point = latticeState.points[index]
+    if (!point) {
+      continue
+    }
+
+    point.position.copy(startPosition).applyMatrix4(latticeTransformDragState.anchorStartInverse).applyMatrix4(latticeTransformAnchor.matrixWorld)
+  }
+
+  refreshLatticeVisuals(false)
+  rebuildCurrentDeformedGeometry()
+}
+
+function finishLatticeTransformDrag(): void {
+  updateLatticeTransformDrag()
+  latticeTransformDragState = null
+  syncLatticeTransformAnchorToSelection()
+  finishControlHistoryEdit()
+}
+
+function setExclusiveLatticeTransformControl(activeControl: TransformControls | null): void {
+  for (const control of latticeTransformControls) {
+    control.enabled = activeControl === null || control === activeControl
+  }
+}
+
+function updateLatticeTransformDraggingState(): void {
+  const isDragging = latticeTransformControls.some((control) => control.dragging)
+  isLatticeTransformDragging = isDragging
+  controls.enabled = !isDragging
+}
+
+function getLatticeTransformControlAxis(control: TransformControls): string | null {
+  const axis = (control as unknown as { axis?: string | null }).axis
+  return typeof axis === 'string' ? axis : null
+}
+
+function rebuildLatticeFromCurrentSource(): void {
+  const sourceQuadMesh = currentSourceQuadMesh
+  const previousLatticeState = latticeState ? cloneLatticeState(latticeState) : null
+  if (!sourceQuadMesh || sourceQuadMesh.vertices.length === 0) {
+    latticeState = null
+    hoveredLatticePointIndex = null
+    selectedLatticePointIndices.clear()
+    refreshLatticeVisuals()
+    return
+  }
+
+  const settings = getCurrentLatticeSettings()
+  const bounds = computeQuadMeshBounds(sourceQuadMesh)
+  const size = bounds.getSize(new THREE.Vector3())
+  const points: LatticePoint[] = []
+  const widthPointCount = getLatticeWidthPointCount(settings)
+  const heightPointCount = getLatticeHeightPointCount(settings)
+  const lengthPointCount = getLatticeLengthPointCount(settings)
+
+  for (let heightIndex = 0; heightIndex < heightPointCount; heightIndex += 1) {
+    for (let widthIndex = 0; widthIndex < widthPointCount; widthIndex += 1) {
+      for (let lengthIndex = 0; lengthIndex < lengthPointCount; lengthIndex += 1) {
+        const position = new THREE.Vector3(
+          getLatticeAxisPosition(bounds.min.x, size.x, widthPointCount, widthIndex),
+          getLatticeAxisPosition(bounds.min.y, size.y, heightPointCount, heightIndex),
+          getLatticeAxisPosition(bounds.min.z, size.z, lengthPointCount, lengthIndex),
+        )
+        points.push({
+          index: points.length,
+          widthIndex,
+          heightIndex,
+          lengthIndex,
+          restPosition: position.clone(),
+          position,
+        })
+      }
+    }
+  }
+
+  latticeState = {
+    settings: cloneLatticeSettings(settings),
+    bounds,
+    size,
+    points,
+  }
+  if (previousLatticeState) {
+    preserveLatticeDeformation(previousLatticeState, latticeState)
+  }
+  hoveredLatticePointIndex = null
+  selectedLatticePointIndices.clear()
+  latticeTransformDragState = null
+  refreshLatticeVisuals()
+}
+
+function cloneLatticeState(state: LatticeState): LatticeState {
+  return {
+    settings: cloneLatticeSettings(state.settings),
+    bounds: state.bounds.clone(),
+    size: state.size.clone(),
+    points: state.points.map((point) => ({
+      index: point.index,
+      widthIndex: point.widthIndex,
+      heightIndex: point.heightIndex,
+      lengthIndex: point.lengthIndex,
+      restPosition: point.restPosition.clone(),
+      position: point.position.clone(),
+    })),
+  }
+}
+
+function preserveLatticeDeformation(previousState: LatticeState, nextState: LatticeState): void {
+  for (const point of nextState.points) {
+    const normalized = getNormalizedPointInBounds(point.restPosition, nextState.bounds, nextState.size)
+    const previousRestPosition = getPointFromNormalizedBounds(normalized, previousState.bounds, previousState.size)
+    const previousDeformedPosition = sampleLatticeStatePosition(previousState, previousRestPosition)
+    const previousDelta = previousDeformedPosition.sub(previousRestPosition)
+    point.position.copy(point.restPosition).add(scaleLatticeDeltaToBounds(previousDelta, previousState.size, nextState.size))
+  }
+}
+
+function computeQuadMeshBounds(quadMesh: QuadMeshData): THREE.Box3 {
+  const bounds = new THREE.Box3()
+  for (const vertex of quadMesh.vertices) {
+    bounds.expandByPoint(vertex)
+  }
+  return bounds
+}
+
+function getNormalizedPointInBounds(point: THREE.Vector3, bounds: THREE.Box3, size: THREE.Vector3): THREE.Vector3 {
+  return new THREE.Vector3(
+    getNormalizedAxisValue(point.x, bounds.min.x, size.x),
+    getNormalizedAxisValue(point.y, bounds.min.y, size.y),
+    getNormalizedAxisValue(point.z, bounds.min.z, size.z),
+  )
+}
+
+function getNormalizedAxisValue(value: number, min: number, size: number): number {
+  if (Math.abs(size) <= SCALE_EPSILON) {
+    return 0.5
+  }
+  return clampNumber((value - min) / size, 0, 1)
+}
+
+function getPointFromNormalizedBounds(normalized: THREE.Vector3, bounds: THREE.Box3, size: THREE.Vector3): THREE.Vector3 {
+  return new THREE.Vector3(
+    bounds.min.x + size.x * normalized.x,
+    bounds.min.y + size.y * normalized.y,
+    bounds.min.z + size.z * normalized.z,
+  )
+}
+
+function scaleLatticeDeltaToBounds(delta: THREE.Vector3, previousSize: THREE.Vector3, nextSize: THREE.Vector3): THREE.Vector3 {
+  return new THREE.Vector3(
+    scaleLatticeDeltaAxis(delta.x, previousSize.x, nextSize.x),
+    scaleLatticeDeltaAxis(delta.y, previousSize.y, nextSize.y),
+    scaleLatticeDeltaAxis(delta.z, previousSize.z, nextSize.z),
+  )
+}
+
+function scaleLatticeDeltaAxis(delta: number, previousSize: number, nextSize: number): number {
+  if (Math.abs(previousSize) <= SCALE_EPSILON) {
+    return delta
+  }
+  return (delta / previousSize) * nextSize
+}
+
+function getLatticeAxisPosition(min: number, size: number, count: number, index: number): number {
+  if (count <= 1 || Math.abs(size) <= SCALE_EPSILON) {
+    return min + size / 2
+  }
+  return min + size * (index / (count - 1))
+}
+
+function applyLatticeDeformation(quadMesh: QuadMeshData): QuadMeshData {
+  if (!latticeState) {
+    return quadMesh
+  }
+
+  return {
+    vertices: quadMesh.vertices.map((vertex) => sampleLatticeDeformation(vertex)),
+    quadFaces: quadMesh.quadFaces,
+  }
+}
+
+function sampleLatticeDeformation(position: THREE.Vector3): THREE.Vector3 {
+  if (!latticeState) {
+    return position.clone()
+  }
+  return sampleLatticeStatePosition(latticeState, position)
+}
+
+function sampleLatticeStatePosition(state: LatticeState, position: THREE.Vector3): THREE.Vector3 {
+  const { bounds, size, settings } = state
+  const widthSample = getLatticeAxisSample(position.x, bounds.min.x, size.x, getLatticeWidthPointCount(settings))
+  const heightSample = getLatticeAxisSample(position.y, bounds.min.y, size.y, getLatticeHeightPointCount(settings))
+  const lengthSample = getLatticeAxisSample(position.z, bounds.min.z, size.z, getLatticeLengthPointCount(settings))
+
+  return trilinearSampleLatticePoint(
+    state,
+    widthSample.index0,
+    widthSample.index1,
+    widthSample.alpha,
+    heightSample.index0,
+    heightSample.index1,
+    heightSample.alpha,
+    lengthSample.index0,
+    lengthSample.index1,
+    lengthSample.alpha,
+  )
+}
+
+function getLatticeAxisSample(
+  coordinate: number,
+  min: number,
+  size: number,
+  count: number,
+): { index0: number; index1: number; alpha: number } {
+  if (count <= 1 || Math.abs(size) <= SCALE_EPSILON) {
+    return { index0: 0, index1: 0, alpha: 0 }
+  }
+
+  const normalized = clampNumber((coordinate - min) / size, 0, 1)
+  const gridCoordinate = normalized * (count - 1)
+  const index0 = Math.floor(gridCoordinate)
+  const index1 = Math.min(index0 + 1, count - 1)
+  return {
+    index0,
+    index1,
+    alpha: gridCoordinate - index0,
+  }
+}
+
+function trilinearSampleLatticePoint(
+  state: LatticeState,
+  width0: number,
+  width1: number,
+  widthAlpha: number,
+  height0: number,
+  height1: number,
+  heightAlpha: number,
+  length0: number,
+  length1: number,
+  lengthAlpha: number,
+): THREE.Vector3 {
+  const p000 = getLatticePointPosition(state, width0, height0, length0)
+  const p100 = getLatticePointPosition(state, width1, height0, length0)
+  const p010 = getLatticePointPosition(state, width0, height1, length0)
+  const p110 = getLatticePointPosition(state, width1, height1, length0)
+  const p001 = getLatticePointPosition(state, width0, height0, length1)
+  const p101 = getLatticePointPosition(state, width1, height0, length1)
+  const p011 = getLatticePointPosition(state, width0, height1, length1)
+  const p111 = getLatticePointPosition(state, width1, height1, length1)
+
+  const x00 = p000.clone().lerp(p100, widthAlpha)
+  const x10 = p010.clone().lerp(p110, widthAlpha)
+  const x01 = p001.clone().lerp(p101, widthAlpha)
+  const x11 = p011.clone().lerp(p111, widthAlpha)
+  const y0 = x00.lerp(x10, heightAlpha)
+  const y1 = x01.lerp(x11, heightAlpha)
+  return y0.lerp(y1, lengthAlpha)
+}
+
+function getLatticePointPosition(
+  state: LatticeState,
+  widthIndex: number,
+  heightIndex: number,
+  lengthIndex: number,
+): THREE.Vector3 {
+  const point = state.points[getLatticePointIndex(widthIndex, heightIndex, lengthIndex, state.settings)]
+  return point?.position ?? new THREE.Vector3()
+}
+
+function getLatticePointIndex(
+  widthIndex: number,
+  heightIndex: number,
+  lengthIndex: number,
+  settings: BatwingLatticeSettings,
+): number {
+  const widthPointCount = getLatticeWidthPointCount(settings)
+  const lengthPointCount = getLatticeLengthPointCount(settings)
+  return (heightIndex * widthPointCount + widthIndex) * lengthPointCount + lengthIndex
+}
+
+function getLatticeLengthPointCount(settings: BatwingLatticeSettings): number {
+  return settings.lengthDivisions + 1
+}
+
+function getLatticeWidthPointCount(settings: BatwingLatticeSettings): number {
+  return settings.widthDivisions + 1
+}
+
+function getLatticeHeightPointCount(settings: BatwingLatticeSettings): number {
+  return settings.heightDivisions + 1
+}
+
+function refreshLatticeVisuals(syncTransformAnchor = true): void {
+  refreshLatticePointMesh()
+  refreshLatticeLineSegments()
+  if (syncTransformAnchor) {
+    syncLatticeTransformAnchorToSelection()
+  }
+}
+
+function refreshLatticePointMesh(): void {
+  if (!latticeState || latticeState.points.length === 0) {
+    disposeLatticePointMesh()
+    return
+  }
+
+  if (!latticePointMesh || !latticeHighlightPointMesh || latticePointMesh.count !== latticeState.points.length) {
+    disposeLatticePointMesh()
+    const pointMaterial = new THREE.MeshBasicMaterial({
+      color: LATTICE_COLOR,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 1,
+      toneMapped: false,
+    })
+    const highlightMaterial = new THREE.MeshBasicMaterial({
+      color: LATTICE_SELECTED_COLOR,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 1,
+      toneMapped: false,
+    })
+
+    latticePointMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 12, 8),
+      pointMaterial,
+      latticeState.points.length,
+    )
+    latticeHighlightPointMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 12, 8),
+      highlightMaterial,
+      latticeState.points.length,
+    )
+    latticePointMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    latticeHighlightPointMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    latticePointMesh.frustumCulled = false
+    latticeHighlightPointMesh.frustumCulled = false
+    latticePointMesh.renderOrder = 7
+    latticeHighlightPointMesh.renderOrder = 8
+    scene.add(latticePointMesh)
+    scene.add(latticeHighlightPointMesh)
+  }
+
+  const displayScale = getLatticePointDisplayScale()
+  let highlightCount = 0
+  for (const point of latticeState.points) {
+    latticeMatrixHelper.position.copy(point.position)
+    latticeMatrixHelper.rotation.set(0, 0, 0)
+    latticeMatrixHelper.scale.setScalar(displayScale)
+    latticeMatrixHelper.updateMatrix()
+    latticePointMesh.setMatrixAt(point.index, latticeMatrixHelper.matrix)
+    if (selectedLatticePointIndices.has(point.index) || hoveredLatticePointIndex === point.index) {
+      latticeMatrixHelper.scale.setScalar(displayScale * 1.1)
+      latticeMatrixHelper.updateMatrix()
+      latticeHighlightPointMesh.setMatrixAt(highlightCount, latticeMatrixHelper.matrix)
+      highlightCount += 1
+    }
+  }
+
+  latticeHighlightPointMesh.count = highlightCount
+  latticePointMesh.instanceMatrix.needsUpdate = true
+  latticeHighlightPointMesh.instanceMatrix.needsUpdate = true
+}
+
+function refreshLatticeLineSegments(): void {
+  if (!latticeState || latticeState.points.length === 0) {
+    disposeLatticeLineSegments()
+    return
+  }
+
+  const geometry = buildLatticeLineGeometry()
+  if (!latticeLineSegments) {
+    latticeLineSegments = new THREE.LineSegments(
+      geometry,
+      new THREE.LineBasicMaterial({
+        color: LATTICE_LINE_COLOR,
+        transparent: true,
+        opacity: 0.34,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    latticeLineSegments.frustumCulled = false
+    latticeLineSegments.renderOrder = 6
+    scene.add(latticeLineSegments)
+    return
+  }
+
+  latticeLineSegments.geometry.dispose()
+  latticeLineSegments.geometry = geometry
+}
+
+function buildLatticeLineGeometry(): THREE.BufferGeometry {
+  const positions: number[] = []
+  if (!latticeState) {
+    return new THREE.BufferGeometry()
+  }
+
+  const { settings } = latticeState
+  const widthPointCount = getLatticeWidthPointCount(settings)
+  const heightPointCount = getLatticeHeightPointCount(settings)
+  const lengthPointCount = getLatticeLengthPointCount(settings)
+  const addLine = (a: THREE.Vector3, b: THREE.Vector3): void => {
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z)
+  }
+
+  for (let heightIndex = 0; heightIndex < heightPointCount; heightIndex += 1) {
+    for (let widthIndex = 0; widthIndex < widthPointCount; widthIndex += 1) {
+      for (let lengthIndex = 0; lengthIndex < lengthPointCount; lengthIndex += 1) {
+        const point = getLatticePointPosition(latticeState, widthIndex, heightIndex, lengthIndex)
+        if (widthIndex + 1 < widthPointCount) {
+          addLine(point, getLatticePointPosition(latticeState, widthIndex + 1, heightIndex, lengthIndex))
+        }
+        if (heightIndex + 1 < heightPointCount) {
+          addLine(point, getLatticePointPosition(latticeState, widthIndex, heightIndex + 1, lengthIndex))
+        }
+        if (lengthIndex + 1 < lengthPointCount) {
+          addLine(point, getLatticePointPosition(latticeState, widthIndex, heightIndex, lengthIndex + 1))
+        }
+      }
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+function getLatticePointDisplayScale(): number {
+  if (!latticeState) {
+    return LATTICE_POINT_SIZE
+  }
+
+  const maxSize = Math.max(latticeState.size.x, latticeState.size.y, latticeState.size.z, 1)
+  return clampNumber(maxSize / 120, LATTICE_POINT_SIZE, 0.16)
+}
+
+function disposeLatticePointMesh(): void {
+  if (latticePointMesh) {
+    scene.remove(latticePointMesh)
+    latticePointMesh.geometry.dispose()
+    latticePointMesh.material.dispose()
+    latticePointMesh = null
+  }
+
+  if (latticeHighlightPointMesh) {
+    scene.remove(latticeHighlightPointMesh)
+    latticeHighlightPointMesh.geometry.dispose()
+    latticeHighlightPointMesh.material.dispose()
+    latticeHighlightPointMesh = null
+  }
+}
+
+function disposeLatticeLineSegments(): void {
+  if (!latticeLineSegments) {
+    return
+  }
+
+  scene.remove(latticeLineSegments)
+  latticeLineSegments.geometry.dispose()
+  latticeLineSegments.material.dispose()
+  latticeLineSegments = null
+}
+
+function syncLatticeTransformAnchorToSelection(): void {
+  const average = getSelectedLatticeAverage()
+  const hasSelection = average !== null
+  latticeTransformAnchor.visible = hasSelection
+  for (const helper of latticeTransformControlHelpers) {
+    helper.visible = hasSelection
+  }
+
+  if (!average) {
+    for (const control of latticeTransformControls) {
+      control.detach()
+    }
+    return
+  }
+
+  latticeTransformAnchor.position.copy(average)
+  latticeTransformAnchor.rotation.set(0, 0, 0)
+  latticeTransformAnchor.scale.set(1, 1, 1)
+  latticeTransformAnchor.updateMatrixWorld(true)
+  for (const control of latticeTransformControls) {
+    control.attach(latticeTransformAnchor)
+  }
+}
+
+function getSelectedLatticeAverage(): THREE.Vector3 | null {
+  if (!latticeState || selectedLatticePointIndices.size === 0) {
+    return null
+  }
+
+  const average = new THREE.Vector3()
+  let count = 0
+  selectedLatticePointIndices.forEach((index) => {
+    const point = latticeState?.points[index]
+    if (point) {
+      average.add(point.position)
+      count += 1
+    }
+  })
+
+  if (count === 0) {
+    return null
+  }
+  return average.multiplyScalar(1 / count)
+}
+
+function selectSingleLatticePoint(index: number, additive: boolean): void {
+  if (!additive) {
+    selectedLatticePointIndices.clear()
+  }
+
+  if (additive && selectedLatticePointIndices.has(index)) {
+    selectedLatticePointIndices.delete(index)
+  } else {
+    selectedLatticePointIndices.add(index)
+  }
+
+  refreshLatticeVisuals()
+}
+
+function selectLatticePoints(indices: readonly number[], additive: boolean): void {
+  if (!additive) {
+    selectedLatticePointIndices.clear()
+  }
+
+  for (const index of indices) {
+    selectedLatticePointIndices.add(index)
+  }
+
+  refreshLatticeVisuals()
+}
+
+function clearLatticeSelection(): void {
+  if (selectedLatticePointIndices.size === 0) {
+    return
+  }
+
+  selectedLatticePointIndices.clear()
+  refreshLatticeVisuals()
+}
+
+function onLatticePointerDown(event: PointerEvent): void {
+  if (event.button !== 0 || isLatticeTransformPointerActive()) {
+    return
+  }
+
+  const hitIndex = pickLatticePoint(event)
+  if (hitIndex !== null) {
+    event.preventDefault()
+    selectSingleLatticePoint(hitIndex, event.shiftKey)
+    return
+  }
+
+  latticeMarqueeState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    currentY: event.clientY,
+    additive: event.shiftKey,
+    active: false,
+  }
+  canvas.setPointerCapture(event.pointerId)
+  event.preventDefault()
+}
+
+function onLatticePointerMove(event: PointerEvent): void {
+  const marqueeState = latticeMarqueeState
+  if (!marqueeState || marqueeState.pointerId !== event.pointerId) {
+    updateLatticeHover(event)
+    return
+  }
+
+  marqueeState.currentX = event.clientX
+  marqueeState.currentY = event.clientY
+  const deltaX = marqueeState.currentX - marqueeState.startX
+  const deltaY = marqueeState.currentY - marqueeState.startY
+  if (!marqueeState.active && Math.hypot(deltaX, deltaY) >= LATTICE_MARQUEE_THRESHOLD) {
+    marqueeState.active = true
+    latticeMarquee.hidden = false
+  }
+
+  if (marqueeState.active) {
+    updateLatticeMarqueeElement(marqueeState)
+  }
+}
+
+function updateLatticeHover(event: PointerEvent): void {
+  if (isLatticeTransformPointerActive()) {
+    clearLatticeHover()
+    return
+  }
+
+  const hitIndex = pickLatticePoint(event)
+  if (hoveredLatticePointIndex === hitIndex) {
+    return
+  }
+
+  hoveredLatticePointIndex = hitIndex
+  refreshLatticePointMesh()
+}
+
+function clearLatticeHover(): void {
+  if (hoveredLatticePointIndex === null) {
+    return
+  }
+
+  hoveredLatticePointIndex = null
+  refreshLatticePointMesh()
+}
+
+function onLatticePointerUp(event: PointerEvent): void {
+  const marqueeState = latticeMarqueeState
+  if (!marqueeState || marqueeState.pointerId !== event.pointerId) {
+    return
+  }
+
+  if (marqueeState.active) {
+    selectLatticePoints(getLatticePointsInMarquee(marqueeState), marqueeState.additive)
+  } else if (!marqueeState.additive) {
+    clearLatticeSelection()
+  }
+
+  finishLatticeMarquee(event.pointerId)
+}
+
+function onLatticePointerCancel(event: PointerEvent): void {
+  const marqueeState = latticeMarqueeState
+  if (!marqueeState || marqueeState.pointerId !== event.pointerId) {
+    return
+  }
+  finishLatticeMarquee(event.pointerId)
+}
+
+function finishLatticeMarquee(pointerId: number): void {
+  if (canvas.hasPointerCapture(pointerId)) {
+    canvas.releasePointerCapture(pointerId)
+  }
+  latticeMarqueeState = null
+  latticeMarquee.hidden = true
+}
+
+function isLatticeTransformPointerActive(): boolean {
+  return isUsingLatticeTransformControls || isLatticeTransformDragging
+}
+
+function pickLatticePoint(event: PointerEvent): number | null {
+  if (!latticePointMesh || !latticeState) {
+    return null
+  }
+
+  setPointerFromEvent(event)
+  latticeRaycaster.setFromCamera(latticePointer, camera)
+  const hits = latticeRaycaster.intersectObject(latticePointMesh, false)
+  const hit = hits.find((candidate) => typeof candidate.instanceId === 'number')
+  if (hit?.instanceId === undefined || hit.instanceId < 0 || hit.instanceId >= latticeState.points.length) {
+    return null
+  }
+
+  return hit.instanceId
+}
+
+function setPointerFromEvent(event: PointerEvent): void {
+  const rect = canvas.getBoundingClientRect()
+  latticePointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  latticePointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+}
+
+function updateLatticeMarqueeElement(marqueeState: LatticeMarqueeState): void {
+  const left = Math.min(marqueeState.startX, marqueeState.currentX)
+  const top = Math.min(marqueeState.startY, marqueeState.currentY)
+  const width = Math.abs(marqueeState.currentX - marqueeState.startX)
+  const height = Math.abs(marqueeState.currentY - marqueeState.startY)
+  latticeMarquee.style.left = `${left}px`
+  latticeMarquee.style.top = `${top}px`
+  latticeMarquee.style.width = `${width}px`
+  latticeMarquee.style.height = `${height}px`
+}
+
+function getLatticePointsInMarquee(marqueeState: LatticeMarqueeState): number[] {
+  if (!latticeState) {
+    return []
+  }
+
+  const left = Math.min(marqueeState.startX, marqueeState.currentX)
+  const right = Math.max(marqueeState.startX, marqueeState.currentX)
+  const top = Math.min(marqueeState.startY, marqueeState.currentY)
+  const bottom = Math.max(marqueeState.startY, marqueeState.currentY)
+  const rect = canvas.getBoundingClientRect()
+  const selectedIndices: number[] = []
+
+  for (const point of latticeState.points) {
+    latticeProjection.copy(point.position).project(camera)
+    if (latticeProjection.z < -1 || latticeProjection.z > 1) {
+      continue
+    }
+
+    const screenX = rect.left + ((latticeProjection.x + 1) / 2) * rect.width
+    const screenY = rect.top + ((-latticeProjection.y + 1) / 2) * rect.height
+    if (screenX >= left && screenX <= right && screenY >= top && screenY <= bottom) {
+      selectedIndices.push(point.index)
+    }
+  }
+
+  return selectedIndices
 }
 
 function buildSubdividedWeldedArrayQuadMesh(
@@ -2035,6 +3374,14 @@ function animate(): void {
 function cleanup(): void {
   window.cancelAnimationFrame(animationFrameId)
   controls.dispose()
+  for (const control of latticeTransformControls) {
+    control.dispose()
+  }
+  for (const helper of latticeTransformControlHelpers) {
+    scene.remove(helper)
+  }
+  disposeLatticePointMesh()
+  disposeLatticeLineSegments()
   batwingMesh.geometry.dispose()
   batwingMesh.material.dispose()
   wireOverlay.geometry.dispose()
@@ -2055,6 +3402,17 @@ for (const binding of arraySliderBindings) {
   bindArraySlider(binding)
   updateRangeProgress(binding.slider)
 }
+
+for (const binding of latticeSliderBindings) {
+  bindLatticeSlider(binding)
+  updateRangeProgress(binding.slider)
+}
+
+canvas.addEventListener('pointerdown', onLatticePointerDown)
+canvas.addEventListener('pointermove', onLatticePointerMove)
+canvas.addEventListener('pointerup', onLatticePointerUp)
+canvas.addEventListener('pointercancel', onLatticePointerCancel)
+canvas.addEventListener('pointerleave', clearLatticeHover)
 
 baseGridToggle.addEventListener('change', () => {
   const previousState = captureAppState()

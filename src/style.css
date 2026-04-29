@@ -55,6 +55,15 @@ input {
   height: 100%;
 }
 
+.lattice-marquee {
+  position: fixed;
+  z-index: 9;
+  border: 1px solid rgba(121, 216, 255, 0.86);
+  background: rgba(121, 216, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+}
+
 #ui-panel {
   position: absolute;
   top: 18px;
