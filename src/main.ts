@@ -118,16 +118,16 @@ const DEFAULT_ARRAY_SETTINGS: BatwingArraySettings = {
 
 const FOIL_MATERIAL_STYLE: BatwingMaterialStyle = {
   color: 0xf1f5ff,
-  metalness: 1,
-  roughness: 0.28,
+  metalness: 0.72,
+  roughness: 0.34,
   clearcoat: 1,
-  clearcoatRoughness: 0.24,
-  envMapIntensity: 1.9,
+  clearcoatRoughness: 0.2,
+  envMapIntensity: 1.32,
   iridescence: 0.72,
   iridescenceIOR: 1.22,
   iridescenceThicknessRange: [140, 460],
   reflectivity: 1,
-  specularIntensity: 1,
+  specularIntensity: 0.88,
   sheen: 0.1,
   sheenRoughness: 0.5,
   sheenColor: 0xe7eeff,
@@ -155,9 +155,9 @@ const MATTE_MATERIAL_STYLE: BatwingMaterialStyle = {
 }
 
 const REFLECTION_ACCENT_INTENSITIES = {
-  magenta: 6.2,
-  cyan: 7.8,
-  amber: 6.9,
+  magenta: 3.2,
+  cyan: 4.1,
+  amber: 3.6,
 } as const
 
 const app = document.querySelector<HTMLDivElement>('#app') ?? (() => {
@@ -301,21 +301,23 @@ function requireElement<T extends Element>(selector: string): T {
   return element
 }
 
-function addWrappedGlow(
+function addWrappedSoftbox(
   context: CanvasRenderingContext2D,
   width: number,
   x: number,
   y: number,
-  radius: number,
-  stops: readonly [number, string][],
+  boxWidth: number,
+  boxHeight: number,
+  color: string,
+  blur: number,
 ): void {
   for (const offset of [-width, 0, width]) {
-    const gradient = context.createRadialGradient(x + offset, y, 0, x + offset, y, radius)
-    for (const [position, color] of stops) {
-      gradient.addColorStop(position, color)
-    }
-    context.fillStyle = gradient
-    context.fillRect(x + offset - radius, y - radius, radius * 2, radius * 2)
+    context.save()
+    context.shadowColor = color
+    context.shadowBlur = blur
+    context.fillStyle = color
+    context.fillRect(x + offset - boxWidth / 2, y - boxHeight / 2, boxWidth, boxHeight)
+    context.restore()
   }
 }
 
@@ -333,43 +335,24 @@ function createStudioReflectionEnvironment(renderer: THREE.WebGLRenderer): THREE
   const width = canvas.width
   const height = canvas.height
   const baseGradient = context.createLinearGradient(0, 0, 0, height)
-  baseGradient.addColorStop(0, '#172241')
-  baseGradient.addColorStop(0.24, '#35538b')
-  baseGradient.addColorStop(0.52, '#9aa8e2')
-  baseGradient.addColorStop(0.76, '#ebf1ff')
-  baseGradient.addColorStop(1, '#c8f3ff')
+  baseGradient.addColorStop(0, '#05070d')
+  baseGradient.addColorStop(0.2, '#111827')
+  baseGradient.addColorStop(0.46, '#22324d')
+  baseGradient.addColorStop(0.7, '#0a0d14')
+  baseGradient.addColorStop(1, '#020306')
   context.fillStyle = baseGradient
   context.fillRect(0, 0, width, height)
 
-  addWrappedGlow(context, width, width * 0.18, height * 0.5, width * 0.24, [
-    [0, 'rgba(255, 92, 223, 0.62)'],
-    [0.42, 'rgba(255, 92, 223, 0.18)'],
-    [1, 'rgba(255, 92, 223, 0)'],
-  ])
+  addWrappedSoftbox(context, width, width * 0.52, height * 0.18, width * 0.54, height * 0.08, 'rgba(255,255,255,0.92)', 36)
+  addWrappedSoftbox(context, width, width * 0.18, height * 0.54, width * 0.1, height * 0.72, 'rgba(113,215,255,0.72)', 42)
+  addWrappedSoftbox(context, width, width * 0.84, height * 0.48, width * 0.12, height * 0.66, 'rgba(255,205,115,0.62)', 42)
+  addWrappedSoftbox(context, width, width * 0.5, height * 0.82, width * 0.42, height * 0.1, 'rgba(110,140,210,0.38)', 30)
 
-  addWrappedGlow(context, width, width * 0.82, height * 0.52, width * 0.24, [
-    [0, 'rgba(255, 207, 103, 0.82)'],
-    [0.4, 'rgba(255, 207, 103, 0.24)'],
-    [1, 'rgba(255, 207, 103, 0)'],
-  ])
-
-  addWrappedGlow(context, width, width * 0.5, height * 0.84, width * 0.34, [
-    [0, 'rgba(79, 230, 255, 0.72)'],
-    [0.38, 'rgba(79, 230, 255, 0.24)'],
-    [1, 'rgba(79, 230, 255, 0)'],
-  ])
-
-  addWrappedGlow(context, width, width * 0.5, height * 0.2, width * 0.26, [
-    [0, 'rgba(255, 255, 255, 0.82)'],
-    [0.48, 'rgba(255, 255, 255, 0.18)'],
-    [1, 'rgba(255, 255, 255, 0)'],
-  ])
-
-  addWrappedGlow(context, width, width * 0.58, height * 0.58, width * 0.18, [
-    [0, 'rgba(255, 255, 255, 0.34)'],
-    [0.55, 'rgba(255, 255, 255, 0.08)'],
-    [1, 'rgba(255, 255, 255, 0)'],
-  ])
+  context.fillStyle = 'rgba(0,0,0,0.38)'
+  context.fillRect(width * 0.44, 0, width * 0.12, height)
+  context.fillStyle = 'rgba(255,255,255,0.18)'
+  context.fillRect(width * 0.02, height * 0.35, width * 0.96, height * 0.018)
+  context.fillRect(width * 0.02, height * 0.67, width * 0.96, height * 0.012)
 
   const environmentTexture = new THREE.CanvasTexture(canvas)
   environmentTexture.colorSpace = THREE.SRGBColorSpace
@@ -462,7 +445,7 @@ const renderer = new THREE.WebGLRenderer({
 })
 renderer.outputColorSpace = THREE.SRGBColorSpace
 renderer.toneMapping = THREE.ACESFilmicToneMapping
-renderer.toneMappingExposure = 1.18
+renderer.toneMappingExposure = 1.04
 renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
@@ -502,26 +485,33 @@ controls.mouseButtons.LEFT = -1 as THREE.MOUSE
 controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN
 controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE
 
-const ambientLight = new THREE.HemisphereLight(0xf9fbff, 0x8b96a4, 1.2)
+const ambientLight = new THREE.HemisphereLight(0xdfe9ff, 0x11151d, 0.34)
 scene.add(ambientLight)
 
-const keyLight = new THREE.DirectionalLight(0xffffff, 1.5)
-keyLight.position.set(6, 11, 4)
-keyLight.castShadow = true
-keyLight.shadow.mapSize.set(2048, 2048)
-keyLight.shadow.bias = -0.00015
-keyLight.shadow.normalBias = 0.045
+const keyLight = new THREE.DirectionalLight(0xffffff, 4.2)
+keyLight.position.set(-8, 13, 7)
+keyLight.target.position.set(0, 0, 0)
+scene.add(keyLight.target)
+keyLight.castShadow = false
+keyLight.shadow.mapSize.set(4096, 4096)
+keyLight.shadow.bias = -0.00008
+keyLight.shadow.normalBias = 0.024
+keyLight.shadow.radius = 5
 keyLight.shadow.camera.near = 0.5
-keyLight.shadow.camera.far = 40
-keyLight.shadow.camera.left = -12
-keyLight.shadow.camera.right = 12
-keyLight.shadow.camera.top = 12
-keyLight.shadow.camera.bottom = -12
+keyLight.shadow.camera.far = 120
+keyLight.shadow.camera.left = -18
+keyLight.shadow.camera.right = 18
+keyLight.shadow.camera.top = 18
+keyLight.shadow.camera.bottom = -18
 scene.add(keyLight)
 
-const fillLight = new THREE.DirectionalLight(0xd7ebff, 0.55)
-fillLight.position.set(-9, 6, -8)
+const fillLight = new THREE.DirectionalLight(0x9fb8df, 0.22)
+fillLight.position.set(9, 5, -10)
 scene.add(fillLight)
+
+const rimLight = new THREE.DirectionalLight(0x8fc7ff, 0.82)
+rimLight.position.set(7, 4, -9)
+scene.add(rimLight)
 
 const magentaAccentLight = new THREE.PointLight(
   0xff4cc8,
@@ -575,8 +565,8 @@ installEggIridescenceShader(batwingMaterial, eggIridescenceState)
 
 const initialGeometrySet = buildBatwingGeometrySet(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS)
 const batwingMesh = new THREE.Mesh(initialGeometrySet.meshGeometry, batwingMaterial)
-batwingMesh.castShadow = true
-batwingMesh.receiveShadow = true
+batwingMesh.castShadow = false
+batwingMesh.receiveShadow = false
 batwingMesh.frustumCulled = false
 scene.add(batwingMesh)
 
@@ -608,6 +598,8 @@ const boxGuide = new THREE.LineSegments(
 boxGuide.visible = boxGuideToggle.checked
 boxGuide.renderOrder = 2
 scene.add(boxGuide)
+
+updateLightingForCurrentGeometry()
 
 const exportCounters = {
   obj: 0,
@@ -1005,7 +997,26 @@ function rebuildBatwing(): void {
 
   boxGuide.geometry.dispose()
   boxGuide.geometry = buildArrayBoxGuideGeometry(arraySettings)
+  updateLightingForCurrentGeometry()
   updateGeometryDataset()
+}
+
+function updateLightingForCurrentGeometry(): void {
+  batwingMesh.updateWorldMatrix(true, false)
+  const boundingBox = new THREE.Box3().setFromObject(batwingMesh)
+  if (boundingBox.isEmpty()) {
+    return
+  }
+
+  const center = boundingBox.getCenter(new THREE.Vector3())
+  const size = boundingBox.getSize(new THREE.Vector3())
+  const shadowRadius = Math.max(size.x, size.y, size.z, BATWING_BOX_DIMENSIONS.width) / 2 + 9
+  const lightScale = Math.max(1, shadowRadius / 18)
+  keyLight.position.set(center.x - 8 * lightScale, center.y + 13 * lightScale, center.z + 7 * lightScale)
+  keyLight.target.position.copy(center)
+  keyLight.target.updateMatrixWorld()
+  fillLight.position.set(center.x + 9 * lightScale, center.y + 5 * lightScale, center.z - 10 * lightScale)
+  rimLight.position.set(center.x + 7 * lightScale, center.y + 4 * lightScale, center.z - 9 * lightScale)
 }
 
 function getArrayInstanceCount(settings: BatwingArraySettings): number {
