@@ -6,7 +6,6 @@ import {
   BATWING_BOX_DIMENSIONS,
   type BatwingSettings,
   buildBatwingGeometry,
-  buildBatwingWireGeometry,
   createBatwingBoxGuideGeometry,
 } from './batwingGeometry'
 import { InfiniteFadingGrid } from './infiniteGrid'
@@ -92,7 +91,7 @@ document.title = '260428_BatwingGyroid'
 const EXPORT_BASE_NAME = '260428_BatwingGyroid'
 const MAX_HISTORY_STATES = 100
 const MAX_ARRAY_COUNT = 20
-const MAX_ARRAY_INSTANCES = MAX_ARRAY_COUNT * MAX_ARRAY_COUNT * MAX_ARRAY_COUNT
+const WELD_EPSILON = 1e-5
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
   t1: 0.5,
@@ -541,19 +540,17 @@ const batwingMaterial = new THREE.MeshPhysicalMaterial({
 })
 installEggIridescenceShader(batwingMaterial, eggIridescenceState)
 
-const batwingMesh = new THREE.InstancedMesh(
-  buildBatwingGeometry(DEFAULT_SETTINGS),
+const batwingMesh = new THREE.Mesh(
+  buildWeldedArrayGeometry(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS),
   batwingMaterial,
-  MAX_ARRAY_INSTANCES,
 )
 batwingMesh.castShadow = true
 batwingMesh.receiveShadow = true
 batwingMesh.frustumCulled = false
-syncArrayInstances(DEFAULT_ARRAY_SETTINGS)
 scene.add(batwingMesh)
 
 const wireOverlay = new THREE.LineSegments(
-  buildArrayWireGeometry(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS),
+  buildWeldedWireGeometry(batwingMesh.geometry),
   new THREE.LineBasicMaterial({
     color: 0x37506c,
     transparent: true,
@@ -965,12 +962,11 @@ function bindArraySlider(binding: ArraySliderBinding): void {
 function rebuildBatwing(): void {
   const settings = getCurrentSettings()
   const arraySettings = getCurrentArraySettings()
-  const nextGeometry = buildBatwingGeometry(settings)
-  const nextWireGeometry = buildArrayWireGeometry(settings, arraySettings)
+  const nextGeometry = buildWeldedArrayGeometry(settings, arraySettings)
+  const nextWireGeometry = buildWeldedWireGeometry(nextGeometry)
 
   batwingMesh.geometry.dispose()
   batwingMesh.geometry = nextGeometry
-  syncArrayInstances(arraySettings)
 
   wireOverlay.geometry.dispose()
   wireOverlay.geometry = nextWireGeometry
@@ -982,6 +978,13 @@ function rebuildBatwing(): void {
 
 function getArrayInstanceCount(settings: BatwingArraySettings): number {
   return settings.lengthCount * settings.widthCount * settings.heightCount
+}
+
+function getWeldKey(x: number, y: number, z: number): string {
+  const qx = Math.round(x / WELD_EPSILON)
+  const qy = Math.round(y / WELD_EPSILON)
+  const qz = Math.round(z / WELD_EPSILON)
+  return `${qx},${qy},${qz}`
 }
 
 function getArrayOffset(
@@ -1013,17 +1016,6 @@ function forEachArrayOffset(
   }
 }
 
-function syncArrayInstances(settings: BatwingArraySettings): void {
-  const matrix = new THREE.Matrix4()
-  batwingMesh.count = getArrayInstanceCount(settings)
-  forEachArrayOffset(settings, (offset, instanceIndex) => {
-    matrix.makeTranslation(offset.x, offset.y, offset.z)
-    batwingMesh.setMatrixAt(instanceIndex, matrix)
-  })
-  batwingMesh.instanceMatrix.needsUpdate = true
-  batwingMesh.computeBoundingSphere()
-}
-
 function buildArrayLineGeometry(baseGeometry: THREE.BufferGeometry, settings: BatwingArraySettings): THREE.BufferGeometry {
   const basePosition = baseGeometry.getAttribute('position') as THREE.BufferAttribute
   const instanceCount = getArrayInstanceCount(settings)
@@ -1045,13 +1037,107 @@ function buildArrayLineGeometry(baseGeometry: THREE.BufferGeometry, settings: Ba
   return geometry
 }
 
-function buildArrayWireGeometry(
+function buildWeldedArrayGeometry(
   settings: BatwingSettings,
   arraySettings: BatwingArraySettings,
 ): THREE.BufferGeometry {
-  const baseGeometry = buildBatwingWireGeometry(settings)
-  const geometry = buildArrayLineGeometry(baseGeometry, arraySettings)
+  const baseGeometry = buildBatwingGeometry(settings)
+  const basePosition = baseGeometry.getAttribute('position') as THREE.BufferAttribute
+  const baseIndex = baseGeometry.getIndex()
+  if (!baseIndex) {
+    baseGeometry.dispose()
+    throw new Error('Batwing base geometry must be indexed before array welding.')
+  }
+
+  const weldedPositions: number[] = []
+  const weldedIndices: number[] = []
+  const vertexLookup = new Map<string, number>()
+  const sourceToWelded = new Array<number>(basePosition.count)
+  const translatedPosition = new THREE.Vector3()
+  let rawVertexCount = 0
+
+  forEachArrayOffset(arraySettings, (offset) => {
+    for (let vertexIndex = 0; vertexIndex < basePosition.count; vertexIndex += 1) {
+      translatedPosition.fromBufferAttribute(basePosition, vertexIndex).add(offset)
+      const key = getWeldKey(translatedPosition.x, translatedPosition.y, translatedPosition.z)
+      let weldedIndex = vertexLookup.get(key)
+
+      if (weldedIndex === undefined) {
+        weldedIndex = weldedPositions.length / 3
+        vertexLookup.set(key, weldedIndex)
+        weldedPositions.push(translatedPosition.x, translatedPosition.y, translatedPosition.z)
+      }
+
+      sourceToWelded[vertexIndex] = weldedIndex
+      rawVertexCount += 1
+    }
+
+    for (let indexOffset = 0; indexOffset < baseIndex.count; indexOffset += 1) {
+      weldedIndices.push(sourceToWelded[baseIndex.getX(indexOffset)])
+    }
+  })
+
   baseGeometry.dispose()
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(weldedPositions, 3))
+  geometry.setIndex(weldedIndices)
+  geometry.computeVertexNormals()
+  geometry.computeBoundingSphere()
+  geometry.userData.batwing = {
+    welded: true,
+    rawVertexCount,
+    vertexCount: weldedPositions.length / 3,
+    indexCount: weldedIndices.length,
+    instanceCount: getArrayInstanceCount(arraySettings),
+  }
+  return geometry
+}
+
+function buildWeldedWireGeometry(sourceGeometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const sourcePosition = sourceGeometry.getAttribute('position') as THREE.BufferAttribute
+  const sourceIndex = sourceGeometry.getIndex()
+  const edgeLookup = new Set<string>()
+  const edgePairs: [number, number][] = []
+
+  const addEdge = (a: number, b: number): void => {
+    const min = Math.min(a, b)
+    const max = Math.max(a, b)
+    const key = `${min},${max}`
+    if (edgeLookup.has(key)) {
+      return
+    }
+
+    edgeLookup.add(key)
+    edgePairs.push([a, b])
+  }
+
+  if (sourceIndex) {
+    for (let index = 0; index < sourceIndex.count; index += 3) {
+      const a = sourceIndex.getX(index)
+      const b = sourceIndex.getX(index + 1)
+      const c = sourceIndex.getX(index + 2)
+      addEdge(a, b)
+      addEdge(b, c)
+      addEdge(c, a)
+    }
+  }
+
+  const positions = new Float32Array(edgePairs.length * 2 * 3)
+  for (let edgeIndex = 0; edgeIndex < edgePairs.length; edgeIndex += 1) {
+    const [a, b] = edgePairs[edgeIndex]
+    const offset = edgeIndex * 6
+    positions[offset + 0] = sourcePosition.getX(a)
+    positions[offset + 1] = sourcePosition.getY(a)
+    positions[offset + 2] = sourcePosition.getZ(a)
+    positions[offset + 3] = sourcePosition.getX(b)
+    positions[offset + 4] = sourcePosition.getY(b)
+    positions[offset + 5] = sourcePosition.getZ(b)
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.computeBoundingSphere()
   return geometry
 }
 
@@ -1239,40 +1325,8 @@ function getPrimaryMaterialColor(material: THREE.Material): THREE.Color {
 
 function buildExportMesh(): THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> {
   batwingMesh.updateWorldMatrix(true, false)
-
-  const sourceGeometry = batwingMesh.geometry
-  const sourcePosition = sourceGeometry.getAttribute('position') as THREE.BufferAttribute
-  const sourceIndex = sourceGeometry.getIndex()
-  const instanceCount = batwingMesh.count
-  const positions = new Float32Array(sourcePosition.count * instanceCount * 3)
-  const indices: number[] = []
-  const instanceMatrix = new THREE.Matrix4()
-  const finalMatrix = new THREE.Matrix4()
-  const transformedPosition = new THREE.Vector3()
-
-  for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
-    batwingMesh.getMatrixAt(instanceIndex, instanceMatrix)
-    finalMatrix.multiplyMatrices(batwingMesh.matrixWorld, instanceMatrix)
-
-    for (let vertexIndex = 0; vertexIndex < sourcePosition.count; vertexIndex += 1) {
-      transformedPosition.fromBufferAttribute(sourcePosition, vertexIndex).applyMatrix4(finalMatrix)
-      const targetIndex = (instanceIndex * sourcePosition.count + vertexIndex) * 3
-      positions[targetIndex + 0] = transformedPosition.x
-      positions[targetIndex + 1] = transformedPosition.y
-      positions[targetIndex + 2] = transformedPosition.z
-    }
-
-    const indexOffset = instanceIndex * sourcePosition.count
-    if (sourceIndex) {
-      for (let indexOffsetSource = 0; indexOffsetSource < sourceIndex.count; indexOffsetSource += 1) {
-        indices.push(indexOffset + sourceIndex.getX(indexOffsetSource))
-      }
-    }
-  }
-
-  const exportGeometry = new THREE.BufferGeometry()
-  exportGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  exportGeometry.setIndex(indices)
+  const exportGeometry = batwingMesh.geometry.clone()
+  exportGeometry.applyMatrix4(batwingMesh.matrixWorld)
   exportGeometry.computeVertexNormals()
   exportGeometry.computeBoundingSphere()
 
