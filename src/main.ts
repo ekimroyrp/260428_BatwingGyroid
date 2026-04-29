@@ -73,6 +73,7 @@ type BatwingAppState = {
   showWireframe: boolean
   reflectionsEnabled: boolean
   showBoxGuide: boolean
+  showLatticeControls: boolean
   showBackFaces: boolean
 }
 
@@ -176,7 +177,7 @@ const MAX_THICKNESS = 1
 const MAX_SUBDIVISIONS = 3
 const MAX_LATTICE_DIVISIONS = 20
 const WELD_EPSILON = 1e-5
-const LATTICE_POINT_SIZE = 0.055
+const LATTICE_POINT_SIZE = 0.0825
 const LATTICE_MARQUEE_THRESHOLD = 4
 const LATTICE_COLOR = new THREE.Color(0xd100ff)
 const LATTICE_SELECTED_COLOR = new THREE.Color(0xff7a00)
@@ -185,6 +186,11 @@ const BOX_GUIDE_COLOR = 0x4aaed5
 const SCALE_EPSILON = 1e-4
 const BACK_SCALE_HANDLE_OFFSET = 0.4
 const TRANSLATE_ARROW_HEAD_SCALE = 2 / 3
+const LATTICE_GIZMO_AXIS_COLORS: Record<'X' | 'Y' | 'Z', number> = {
+  X: 0xffa1a1,
+  Y: 0xa9e9a1,
+  Z: 0x9fc5ff,
+}
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
   t1: 0.5,
@@ -278,30 +284,44 @@ app.innerHTML = `
             <label class="control" for="t0Slider">
               <div class="control-row">
                 <span>Vert Positions 1</span>
-                <input id="t0-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
+                <input id="t0-value" class="value-pill value-input" type="number" inputmode="decimal" min="0.01" max="0.99" step="0.01" value="0.50" />
               </div>
-              <input id="t0Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+              <input id="t0Slider" type="range" min="0.01" max="0.99" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t1Slider">
               <div class="control-row">
                 <span>Vert Positions 2</span>
-                <input id="t1-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
+                <input id="t1-value" class="value-pill value-input" type="number" inputmode="decimal" min="0.01" max="0.99" step="0.01" value="0.50" />
               </div>
-              <input id="t1Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+              <input id="t1Slider" type="range" min="0.01" max="0.99" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t2Slider">
               <div class="control-row">
                 <span>Vert Positions 3</span>
-                <input id="t2-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
+                <input id="t2-value" class="value-pill value-input" type="number" inputmode="decimal" min="0.01" max="0.99" step="0.01" value="0.50" />
               </div>
-              <input id="t2Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+              <input id="t2Slider" type="range" min="0.01" max="0.99" value="0.50" step="0.01" />
             </label>
             <label class="control" for="t3Slider">
               <div class="control-row">
                 <span>Vert Positions 4</span>
-                <input id="t3-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.50" />
+                <input id="t3-value" class="value-pill value-input" type="number" inputmode="decimal" min="0.01" max="0.99" step="0.01" value="0.50" />
               </div>
-              <input id="t3Slider" type="range" min="0" max="1" value="0.50" step="0.01" />
+              <input id="t3Slider" type="range" min="0.01" max="0.99" value="0.50" step="0.01" />
+            </label>
+            <label class="control" for="thicknessSlider">
+              <div class="control-row">
+                <span>Thickness</span>
+                <input id="thickness-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.00" />
+              </div>
+              <input id="thicknessSlider" type="range" min="0" max="1" value="0" step="0.01" />
+            </label>
+            <label class="control" for="subdivisionsSlider">
+              <div class="control-row">
+                <span>Subdivisions</span>
+                <input id="subdivisions-value" class="value-pill value-input" type="number" inputmode="numeric" min="0" max="3" step="1" value="0" />
+              </div>
+              <input id="subdivisionsSlider" type="range" min="0" max="3" value="0" step="1" />
             </label>
           </div>
         </section>
@@ -330,20 +350,6 @@ app.innerHTML = `
                 <input id="height-count-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
               </div>
               <input id="heightCountSlider" type="range" min="1" max="20" value="1" step="1" />
-            </label>
-            <label class="control" for="thicknessSlider">
-              <div class="control-row">
-                <span>Thickness</span>
-                <input id="thickness-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.00" />
-              </div>
-              <input id="thicknessSlider" type="range" min="0" max="1" value="0" step="0.01" />
-            </label>
-            <label class="control" for="subdivisionsSlider">
-              <div class="control-row">
-                <span>Subdivisions</span>
-                <input id="subdivisions-value" class="value-pill value-input" type="number" inputmode="numeric" min="0" max="3" step="1" value="0" />
-              </div>
-              <input id="subdivisionsSlider" type="range" min="0" max="3" value="0" step="1" />
             </label>
           </div>
         </section>
@@ -385,8 +391,12 @@ app.innerHTML = `
               <input id="baseGridToggle" type="checkbox" checked />
             </label>
             <label class="toggle-control" for="boxGuideToggle">
-              <span>Box Guide</span>
+              <span>Bounding Boxes</span>
               <input id="boxGuideToggle" type="checkbox" checked />
+            </label>
+            <label class="toggle-control" for="latticeControlsToggle">
+              <span>Lattice Controls</span>
+              <input id="latticeControlsToggle" type="checkbox" checked />
             </label>
             <label class="toggle-control" for="wireToggle">
               <span>Mesh Wires</span>
@@ -508,6 +518,7 @@ const baseGridToggle = requireElement<HTMLInputElement>('#baseGridToggle')
 const wireToggle = requireElement<HTMLInputElement>('#wireToggle')
 const reflectionToggle = requireElement<HTMLInputElement>('#reflectionToggle')
 const boxGuideToggle = requireElement<HTMLInputElement>('#boxGuideToggle')
+const latticeControlsToggle = requireElement<HTMLInputElement>('#latticeControlsToggle')
 const backFacesToggle = requireElement<HTMLInputElement>('#backFacesToggle')
 
 const sliderBindings: SliderBinding[] = [
@@ -681,9 +692,9 @@ latticeTransformAnchor.visible = false
 scene.add(latticeTransformAnchor)
 
 const latticeTransformControlHandles = [
-  createLatticeTransformControl('translate', 1.0),
-  createLatticeTransformControl('rotate', 0.5),
-  createLatticeTransformControl('scale', 0.42),
+  createLatticeTransformControl('translate', 0.75),
+  createLatticeTransformControl('rotate', 0.375),
+  createLatticeTransformControl('scale', 0.315),
 ]
 const latticeTransformControls = latticeTransformControlHandles.map(({ control }) => control)
 const latticeTransformControlHelpers = latticeTransformControlHandles.map(({ helper }) => helper)
@@ -1027,6 +1038,7 @@ function cloneAppState(state: BatwingAppState): BatwingAppState {
     showWireframe: state.showWireframe,
     reflectionsEnabled: state.reflectionsEnabled,
     showBoxGuide: state.showBoxGuide,
+    showLatticeControls: state.showLatticeControls,
     showBackFaces: state.showBackFaces,
   }
 }
@@ -1041,6 +1053,7 @@ function captureAppState(): BatwingAppState {
     showWireframe: wireToggle.checked,
     reflectionsEnabled: reflectionToggle.checked,
     showBoxGuide: boxGuideToggle.checked,
+    showLatticeControls: latticeControlsToggle.checked,
     showBackFaces: backFacesToggle.checked,
   }
 }
@@ -1064,6 +1077,7 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
     a.showBoxGuide === b.showBoxGuide &&
+    a.showLatticeControls === b.showLatticeControls &&
     a.showBackFaces === b.showBackFaces
   )
 }
@@ -1124,6 +1138,8 @@ function applyAppState(state: BatwingAppState): void {
   applyMaterialStyle(state.reflectionsEnabled ? FOIL_MATERIAL_STYLE : MATTE_MATERIAL_STYLE)
   boxGuideToggle.checked = state.showBoxGuide
   boxGuide.visible = state.showBoxGuide
+  latticeControlsToggle.checked = state.showLatticeControls
+  updateLatticeControlsVisibility()
   backFacesToggle.checked = state.showBackFaces
   applyBackFacesDiagnosticMode(state.showBackFaces)
   isApplyingHistoryState = false
@@ -1563,8 +1579,44 @@ function createLatticeTransformControl(
   if (mode === 'scale') {
     pushBackScaleHandles(control, BACK_SCALE_HANDLE_OFFSET)
   }
+  tintLatticeTransformGizmo(control)
   scene.add(helper)
   return { control, helper }
+}
+
+function tintLatticeTransformGizmo(control: TransformControls): void {
+  const gizmo = (control as TransformControlsInternalGizmo)._gizmo
+  if (!gizmo) {
+    return
+  }
+
+  for (const modeGroup of Object.values(gizmo.gizmo ?? {})) {
+    tintTransformGroupAxisMaterials(modeGroup)
+  }
+  for (const modeGroup of Object.values(gizmo.helper ?? {})) {
+    tintTransformGroupAxisMaterials(modeGroup)
+  }
+}
+
+function tintTransformGroupAxisMaterials(group: THREE.Object3D): void {
+  group.traverse((child) => {
+    if (child.name !== 'X' && child.name !== 'Y' && child.name !== 'Z') {
+      return
+    }
+
+    const materialCarrier = child as THREE.Object3D & {
+      material?: THREE.Material | THREE.Material[]
+    }
+    const materials = Array.isArray(materialCarrier.material)
+      ? materialCarrier.material
+      : materialCarrier.material
+        ? [materialCarrier.material]
+        : []
+    for (const material of materials) {
+      const colorMaterial = material as THREE.Material & { color?: THREE.Color }
+      colorMaterial.color?.setHex(LATTICE_GIZMO_AXIS_COLORS[child.name])
+    }
+  })
 }
 
 function stripNonAxisTransformHandles(
@@ -2089,6 +2141,29 @@ function refreshLatticeVisuals(syncTransformAnchor = true): void {
   }
 }
 
+function isLatticeControlsVisible(): boolean {
+  return latticeControlsToggle.checked
+}
+
+function updateLatticeControlsVisibility(): void {
+  const visible = isLatticeControlsVisible()
+  if (!visible) {
+    clearLatticeHover()
+    latticeMarquee.hidden = true
+  }
+
+  if (latticePointMesh) {
+    latticePointMesh.visible = visible
+  }
+  if (latticeHighlightPointMesh) {
+    latticeHighlightPointMesh.visible = visible
+  }
+  if (latticeLineSegments) {
+    latticeLineSegments.visible = visible
+  }
+  syncLatticeTransformAnchorToSelection()
+}
+
 function refreshLatticePointMesh(): void {
   if (!latticeState || latticeState.points.length === 0) {
     disposeLatticePointMesh()
@@ -2151,6 +2226,8 @@ function refreshLatticePointMesh(): void {
   }
 
   latticeHighlightPointMesh.count = highlightCount
+  latticePointMesh.visible = isLatticeControlsVisible()
+  latticeHighlightPointMesh.visible = isLatticeControlsVisible()
   latticePointMesh.instanceMatrix.needsUpdate = true
   latticeHighlightPointMesh.instanceMatrix.needsUpdate = true
   latticePointMesh.computeBoundingSphere()
@@ -2180,12 +2257,14 @@ function refreshLatticeLineSegments(): void {
     )
     latticeLineSegments.frustumCulled = false
     latticeLineSegments.renderOrder = 6
+    latticeLineSegments.visible = isLatticeControlsVisible()
     scene.add(latticeLineSegments)
     return
   }
 
   latticeLineSegments.geometry.dispose()
   latticeLineSegments.geometry = geometry
+  latticeLineSegments.visible = isLatticeControlsVisible()
 }
 
 function buildLatticeLineGeometry(): THREE.BufferGeometry {
@@ -2231,7 +2310,7 @@ function getLatticePointDisplayScale(): number {
   }
 
   const maxSize = Math.max(latticeState.size.x, latticeState.size.y, latticeState.size.z, 1)
-  return clampNumber(maxSize / 120, LATTICE_POINT_SIZE, 0.16)
+  return clampNumber(maxSize / 120, LATTICE_POINT_SIZE, 0.24)
 }
 
 function disposeLatticePointMesh(): void {
@@ -2264,12 +2343,13 @@ function disposeLatticeLineSegments(): void {
 function syncLatticeTransformAnchorToSelection(): void {
   const average = getSelectedLatticeAverage()
   const hasSelection = average !== null
-  latticeTransformAnchor.visible = hasSelection
+  const showTransformControls = hasSelection && isLatticeControlsVisible()
+  latticeTransformAnchor.visible = showTransformControls
   for (const helper of latticeTransformControlHelpers) {
-    helper.visible = hasSelection
+    helper.visible = showTransformControls
   }
 
-  if (!average) {
+  if (!average || !showTransformControls) {
     for (const control of latticeTransformControls) {
       control.detach()
     }
@@ -2342,7 +2422,7 @@ function clearLatticeSelection(): void {
 }
 
 function onLatticePointerDown(event: PointerEvent): void {
-  if (event.button !== 0 || isLatticeTransformPointerActive()) {
+  if (event.button !== 0 || isLatticeTransformPointerActive() || !isLatticeControlsVisible()) {
     return
   }
 
@@ -2388,7 +2468,7 @@ function onLatticePointerMove(event: PointerEvent): void {
 }
 
 function updateLatticeHover(event: PointerEvent): void {
-  if (isLatticeTransformPointerActive()) {
+  if (isLatticeTransformPointerActive() || !isLatticeControlsVisible()) {
     clearLatticeHover()
     return
   }
@@ -2447,7 +2527,7 @@ function isLatticeTransformPointerActive(): boolean {
 }
 
 function pickLatticePoint(event: PointerEvent): number | null {
-  if (!latticePointMesh || !latticeState) {
+  if (!latticePointMesh || !latticeState || !isLatticeControlsVisible()) {
     return null
   }
 
@@ -3515,6 +3595,13 @@ boxGuideToggle.addEventListener('change', () => {
   const previousState = captureAppState()
   previousState.showBoxGuide = !boxGuideToggle.checked
   boxGuide.visible = boxGuideToggle.checked
+  commitHistoryCheckpoint(previousState)
+})
+
+latticeControlsToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.showLatticeControls = !latticeControlsToggle.checked
+  updateLatticeControlsVisibility()
   commitHistoryCheckpoint(previousState)
 })
 
