@@ -25,6 +25,7 @@ type BatwingArraySettings = {
   lengthCount: number
   widthCount: number
   heightCount: number
+  thickness: number
   subdivisions: number
 }
 
@@ -35,6 +36,7 @@ type ArraySliderBinding = {
   fallback: number
   min: number
   max: number
+  integer: boolean
   slider: HTMLInputElement
   valueInput: HTMLInputElement
 }
@@ -47,6 +49,7 @@ type BatwingGeometrySet = {
 type BatwingAppState = {
   settings: BatwingSettings
   arraySettings: BatwingArraySettings
+  showBaseGrid: boolean
   showWireframe: boolean
   reflectionsEnabled: boolean
   showBoxGuide: boolean
@@ -101,6 +104,7 @@ document.title = '260428_BatwingGyroid'
 const EXPORT_BASE_NAME = '260428_BatwingGyroid'
 const MAX_HISTORY_STATES = 100
 const MAX_ARRAY_COUNT = 20
+const MAX_THICKNESS = 1
 const MAX_SUBDIVISIONS = 3
 const WELD_EPSILON = 1e-5
 const DEFAULT_SETTINGS: BatwingSettings = {
@@ -113,6 +117,7 @@ const DEFAULT_ARRAY_SETTINGS: BatwingArraySettings = {
   lengthCount: 1,
   widthCount: 1,
   heightCount: 1,
+  thickness: 0,
   subdivisions: 0,
 }
 
@@ -242,6 +247,13 @@ app.innerHTML = `
               </div>
               <input id="heightCountSlider" type="range" min="1" max="20" value="1" step="1" />
             </label>
+            <label class="control" for="thicknessSlider">
+              <div class="control-row">
+                <span>Thickness</span>
+                <input id="thickness-value" class="value-pill value-input" type="number" inputmode="decimal" min="0" max="1" step="0.01" value="0.00" />
+              </div>
+              <input id="thicknessSlider" type="range" min="0" max="1" value="0" step="0.01" />
+            </label>
             <label class="control" for="subdivisionsSlider">
               <div class="control-row">
                 <span>Subdivisions</span>
@@ -256,6 +268,14 @@ app.innerHTML = `
             <span class="panel-section-label">Display</span>
           </button>
           <div class="panel-section-content panel-controls-stack">
+            <label class="toggle-control" for="baseGridToggle">
+              <span>Base Grid</span>
+              <input id="baseGridToggle" type="checkbox" checked />
+            </label>
+            <label class="toggle-control" for="boxGuideToggle">
+              <span>Box Guide</span>
+              <input id="boxGuideToggle" type="checkbox" checked />
+            </label>
             <label class="toggle-control" for="wireToggle">
               <span>Mesh Wires</span>
               <input id="wireToggle" type="checkbox" checked />
@@ -263,10 +283,6 @@ app.innerHTML = `
             <label class="toggle-control" for="reflectionToggle">
               <span>Foil Material</span>
               <input id="reflectionToggle" type="checkbox" checked />
-            </label>
-            <label class="toggle-control" for="boxGuideToggle">
-              <span>Box Guide</span>
-              <input id="boxGuideToggle" type="checkbox" checked />
             </label>
           </div>
         </section>
@@ -371,6 +387,7 @@ const collapseToggle = requireElement<HTMLButtonElement>('#collapseToggle')
 const exportObjButton = requireElement<HTMLButtonElement>('#exportObjButton')
 const exportGlbButton = requireElement<HTMLButtonElement>('#exportGlbButton')
 const exportScreenshotButton = requireElement<HTMLButtonElement>('#exportScreenshotButton')
+const baseGridToggle = requireElement<HTMLInputElement>('#baseGridToggle')
 const wireToggle = requireElement<HTMLInputElement>('#wireToggle')
 const reflectionToggle = requireElement<HTMLInputElement>('#reflectionToggle')
 const boxGuideToggle = requireElement<HTMLInputElement>('#boxGuideToggle')
@@ -408,6 +425,7 @@ const arraySliderBindings: ArraySliderBinding[] = [
     fallback: DEFAULT_ARRAY_SETTINGS.lengthCount,
     min: 1,
     max: MAX_ARRAY_COUNT,
+    integer: true,
     slider: requireElement<HTMLInputElement>('#lengthCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#length-count-value'),
   },
@@ -416,6 +434,7 @@ const arraySliderBindings: ArraySliderBinding[] = [
     fallback: DEFAULT_ARRAY_SETTINGS.widthCount,
     min: 1,
     max: MAX_ARRAY_COUNT,
+    integer: true,
     slider: requireElement<HTMLInputElement>('#widthCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#width-count-value'),
   },
@@ -424,14 +443,25 @@ const arraySliderBindings: ArraySliderBinding[] = [
     fallback: DEFAULT_ARRAY_SETTINGS.heightCount,
     min: 1,
     max: MAX_ARRAY_COUNT,
+    integer: true,
     slider: requireElement<HTMLInputElement>('#heightCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#height-count-value'),
+  },
+  {
+    key: 'thickness',
+    fallback: DEFAULT_ARRAY_SETTINGS.thickness,
+    min: 0,
+    max: MAX_THICKNESS,
+    integer: false,
+    slider: requireElement<HTMLInputElement>('#thicknessSlider'),
+    valueInput: requireElement<HTMLInputElement>('#thickness-value'),
   },
   {
     key: 'subdivisions',
     fallback: DEFAULT_ARRAY_SETTINGS.subdivisions,
     min: 0,
     max: MAX_SUBDIVISIONS,
+    integer: true,
     slider: requireElement<HTMLInputElement>('#subdivisionsSlider'),
     valueInput: requireElement<HTMLInputElement>('#subdivisions-value'),
   },
@@ -473,6 +503,7 @@ const groundGrid = new InfiniteFadingGrid({
   y: -BATWING_BOX_DIMENSIONS.height / 2 - 0.002,
   opacity: 0.9,
 })
+groundGrid.mesh.visible = baseGridToggle.checked
 scene.add(groundGrid.mesh)
 
 const controls = new OrbitControls(camera, renderer.domElement)
@@ -629,8 +660,19 @@ function readSliderNumber(input: HTMLInputElement, fallback: number): number {
 }
 
 function readArraySliderNumber(binding: ArraySliderBinding): number {
-  const value = Math.round(readSliderNumber(binding.slider, binding.fallback))
-  return clampNumber(value, binding.min, binding.max)
+  return normalizeArraySliderValue(binding, readSliderNumber(binding.slider, binding.fallback))
+}
+
+function normalizeArraySliderValue(binding: ArraySliderBinding, value: number): number {
+  const safeValue = Number.isFinite(value) ? value : binding.fallback
+  const clampedValue = clampNumber(safeValue, binding.min, binding.max)
+  const snappedValue = snapValueToSlider(clampedValue, binding.slider)
+  const nextValue = binding.integer ? Math.round(snappedValue) : snappedValue
+  return clampNumber(nextValue, binding.min, binding.max)
+}
+
+function formatArraySliderValue(binding: ArraySliderBinding, value: number): string {
+  return binding.integer ? `${Math.round(value)}` : formatSliderValue(value)
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -731,6 +773,7 @@ function cloneArraySettings(settings: BatwingArraySettings): BatwingArraySetting
     lengthCount: settings.lengthCount,
     widthCount: settings.widthCount,
     heightCount: settings.heightCount,
+    thickness: settings.thickness,
     subdivisions: settings.subdivisions,
   }
 }
@@ -739,6 +782,7 @@ function cloneAppState(state: BatwingAppState): BatwingAppState {
   return {
     settings: cloneSettings(state.settings),
     arraySettings: cloneArraySettings(state.arraySettings),
+    showBaseGrid: state.showBaseGrid,
     showWireframe: state.showWireframe,
     reflectionsEnabled: state.reflectionsEnabled,
     showBoxGuide: state.showBoxGuide,
@@ -749,6 +793,7 @@ function captureAppState(): BatwingAppState {
   return {
     settings: getCurrentSettings(),
     arraySettings: getCurrentArraySettings(),
+    showBaseGrid: baseGridToggle.checked,
     showWireframe: wireToggle.checked,
     reflectionsEnabled: reflectionToggle.checked,
     showBoxGuide: boxGuideToggle.checked,
@@ -764,7 +809,9 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.arraySettings.lengthCount === b.arraySettings.lengthCount &&
     a.arraySettings.widthCount === b.arraySettings.widthCount &&
     a.arraySettings.heightCount === b.arraySettings.heightCount &&
+    a.arraySettings.thickness === b.arraySettings.thickness &&
     a.arraySettings.subdivisions === b.arraySettings.subdivisions &&
+    a.showBaseGrid === b.showBaseGrid &&
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
     a.showBoxGuide === b.showBoxGuide
@@ -817,6 +864,8 @@ function applyAppState(state: BatwingAppState): void {
   isApplyingHistoryState = true
   applySettings(state.settings)
   applyArraySettings(state.arraySettings)
+  baseGridToggle.checked = state.showBaseGrid
+  groundGrid.mesh.visible = state.showBaseGrid
   wireToggle.checked = state.showWireframe
   wireOverlay.visible = state.showWireframe
   reflectionToggle.checked = state.reflectionsEnabled
@@ -861,9 +910,9 @@ function applySettings(settings: BatwingSettings): void {
 
 function applyArraySettings(settings: BatwingArraySettings): void {
   for (const binding of arraySliderBindings) {
-    const nextValue = Math.round(snapValueToSlider(settings[binding.key], binding.slider))
+    const nextValue = normalizeArraySliderValue(binding, settings[binding.key])
     binding.slider.value = `${nextValue}`
-    binding.valueInput.value = `${nextValue}`
+    binding.valueInput.value = formatArraySliderValue(binding, nextValue)
     updateRangeProgress(binding.slider)
   }
 
@@ -884,11 +933,9 @@ function commitValueInput(binding: SliderBinding): void {
 
 function commitArrayValueInput(binding: ArraySliderBinding): void {
   const parsedValue = Number.parseFloat(binding.valueInput.value)
-  const nextValue = Math.round(
-    snapValueToSlider(Number.isFinite(parsedValue) ? parsedValue : binding.fallback, binding.slider),
-  )
+  const nextValue = normalizeArraySliderValue(binding, parsedValue)
   binding.slider.value = `${nextValue}`
-  binding.valueInput.value = `${nextValue}`
+  binding.valueInput.value = formatArraySliderValue(binding, nextValue)
   updateRangeProgress(binding.slider)
   rebuildBatwing()
 }
@@ -943,7 +990,7 @@ function bindArraySlider(binding: ArraySliderBinding): void {
     beginControlHistoryEdit()
     const value = readArraySliderNumber(binding)
     binding.slider.value = `${value}`
-    binding.valueInput.value = `${value}`
+    binding.valueInput.value = formatArraySliderValue(binding, value)
     updateRangeProgress(binding.slider)
     rebuildBatwing()
   }
@@ -977,7 +1024,7 @@ function bindArraySlider(binding: ArraySliderBinding): void {
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      binding.valueInput.value = `${readArraySliderNumber(binding)}`
+      binding.valueInput.value = formatArraySliderValue(binding, readArraySliderNumber(binding))
       clearControlHistoryEdit()
       binding.valueInput.blur()
     }
@@ -1108,7 +1155,8 @@ function buildSubdividedWeldedArrayQuadMesh(
   arraySettings: BatwingArraySettings,
 ): QuadMeshData {
   const weldedMesh = buildWeldedArrayQuadMesh(settings, arraySettings)
-  const subdividedMesh = weldQuadMeshByPosition(subdivideCatmullClark(weldedMesh, arraySettings.subdivisions))
+  const thickenedMesh = createThickenedQuadMesh(weldedMesh, arraySettings.thickness)
+  const subdividedMesh = weldQuadMeshByPosition(subdivideCatmullClark(thickenedMesh, arraySettings.subdivisions))
   return polishQuadMeshContinuity(subdividedMesh, arraySettings.subdivisions)
 }
 
@@ -1162,6 +1210,46 @@ function shouldFlipArrayCellWinding(
   return (lengthIndex + widthIndex + heightIndex) % 2 === 1
 }
 
+function createThickenedQuadMesh(quadMesh: QuadMeshData, thickness: number): QuadMeshData {
+  const safeThickness = clampNumber(thickness, 0, MAX_THICKNESS)
+  if (safeThickness <= 0.0001) {
+    return quadMesh
+  }
+
+  const halfThickness = safeThickness / 2
+  const vertexNormals = computeQuadMeshVertexNormals(quadMesh)
+  const vertexCount = quadMesh.vertices.length
+  const vertices: THREE.Vector3[] = []
+  const quadFaces: QuadFace[] = []
+
+  for (let index = 0; index < vertexCount; index += 1) {
+    vertices.push(quadMesh.vertices[index].clone().addScaledVector(vertexNormals[index], halfThickness))
+  }
+
+  for (let index = 0; index < vertexCount; index += 1) {
+    vertices.push(quadMesh.vertices[index].clone().addScaledVector(vertexNormals[index], -halfThickness))
+  }
+
+  for (const [a, b, c, d] of quadMesh.quadFaces) {
+    quadFaces.push([a, b, c, d])
+    quadFaces.push([
+      a + vertexCount,
+      d + vertexCount,
+      c + vertexCount,
+      b + vertexCount,
+    ])
+  }
+
+  for (const [a, b] of buildDirectedBoundaryEdges(quadMesh.quadFaces)) {
+    quadFaces.push([b, a, a + vertexCount, b + vertexCount])
+  }
+
+  return {
+    vertices,
+    quadFaces,
+  }
+}
+
 function buildGeometryFromQuadMesh(
   quadMesh: QuadMeshData,
   arraySettings: BatwingArraySettings,
@@ -1190,6 +1278,7 @@ function buildGeometryFromQuadMesh(
     indexCount: indices.length,
     quadCount: quadMesh.quadFaces.length,
     instanceCount: getArrayInstanceCount(arraySettings),
+    thickness: arraySettings.thickness,
     subdivisions: arraySettings.subdivisions,
   }
   return geometry
@@ -1223,6 +1312,65 @@ function weldQuadMeshByPosition(quadMesh: QuadMeshData): QuadMeshData {
       sourceToWelded[d],
     ]),
   }
+}
+
+function computeQuadMeshVertexNormals(quadMesh: QuadMeshData): THREE.Vector3[] {
+  const normals = Array.from({ length: quadMesh.vertices.length }, () => new THREE.Vector3())
+
+  for (const quadFace of quadMesh.quadFaces) {
+    const quadNormal = computeQuadNormal(quadMesh.vertices, quadFace)
+    if (quadNormal.lengthSq() <= 1e-12) {
+      continue
+    }
+
+    for (const vertexIndex of quadFace) {
+      normals[vertexIndex].add(quadNormal)
+    }
+  }
+
+  for (const normal of normals) {
+    if (normal.lengthSq() > 1e-12) {
+      normal.normalize()
+    } else {
+      normal.set(0, 1, 0)
+    }
+  }
+
+  averageNormalsByPosition(normals, quadMesh.vertices)
+  return normals
+}
+
+function buildDirectedBoundaryEdges(quadFaces: readonly QuadFace[]): [number, number][] {
+  const edgeUseCounts = new Map<string, { a: number; b: number; count: number }>()
+
+  const addEdge = (a: number, b: number): void => {
+    const min = Math.min(a, b)
+    const max = Math.max(a, b)
+    const key = `${min},${max}`
+    const existingEdge = edgeUseCounts.get(key)
+    if (existingEdge) {
+      existingEdge.count += 1
+      return
+    }
+
+    edgeUseCounts.set(key, { a, b, count: 1 })
+  }
+
+  for (const [a, b, c, d] of quadFaces) {
+    addEdge(a, b)
+    addEdge(b, c)
+    addEdge(c, d)
+    addEdge(d, a)
+  }
+
+  const boundaryEdges: [number, number][] = []
+  for (const edge of edgeUseCounts.values()) {
+    if (edge.count === 1) {
+      boundaryEdges.push([edge.a, edge.b])
+    }
+  }
+
+  return boundaryEdges
 }
 
 function applyContinuousReflectionNormals(
@@ -1907,6 +2055,13 @@ for (const binding of arraySliderBindings) {
   bindArraySlider(binding)
   updateRangeProgress(binding.slider)
 }
+
+baseGridToggle.addEventListener('change', () => {
+  const previousState = captureAppState()
+  previousState.showBaseGrid = !baseGridToggle.checked
+  groundGrid.mesh.visible = baseGridToggle.checked
+  commitHistoryCheckpoint(previousState)
+})
 
 wireToggle.addEventListener('change', () => {
   const previousState = captureAppState()
