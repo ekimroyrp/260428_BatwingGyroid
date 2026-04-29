@@ -304,34 +304,6 @@ app.innerHTML = `
         </section>
         <section class="panel-section">
           <button class="panel-section-header" type="button" aria-expanded="true">
-            <span class="panel-section-label">Lattice</span>
-          </button>
-          <div class="panel-section-content panel-controls-stack">
-            <label class="control" for="lengthDivisionSlider">
-              <div class="control-row">
-                <span>Length Division</span>
-                <input id="length-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
-              </div>
-              <input id="lengthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
-            </label>
-            <label class="control" for="widthDivisionSlider">
-              <div class="control-row">
-                <span>Width Division</span>
-                <input id="width-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
-              </div>
-              <input id="widthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
-            </label>
-            <label class="control" for="heightDivisionSlider">
-              <div class="control-row">
-                <span>Height Division</span>
-                <input id="height-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
-              </div>
-              <input id="heightDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
-            </label>
-          </div>
-        </section>
-        <section class="panel-section">
-          <button class="panel-section-header" type="button" aria-expanded="true">
             <span class="panel-section-label">Array</span>
           </button>
           <div class="panel-section-content panel-controls-stack">
@@ -369,6 +341,34 @@ app.innerHTML = `
                 <input id="subdivisions-value" class="value-pill value-input" type="number" inputmode="numeric" min="0" max="3" step="1" value="0" />
               </div>
               <input id="subdivisionsSlider" type="range" min="0" max="3" value="0" step="1" />
+            </label>
+          </div>
+        </section>
+        <section class="panel-section">
+          <button class="panel-section-header" type="button" aria-expanded="true">
+            <span class="panel-section-label">Lattice</span>
+          </button>
+          <div class="panel-section-content panel-controls-stack">
+            <label class="control" for="lengthDivisionSlider">
+              <div class="control-row">
+                <span>Length Division</span>
+                <input id="length-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="lengthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="widthDivisionSlider">
+              <div class="control-row">
+                <span>Width Division</span>
+                <input id="width-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="widthDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="heightDivisionSlider">
+              <div class="control-row">
+                <span>Height Division</span>
+                <input id="height-division-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
+              </div>
+              <input id="heightDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
             </label>
           </div>
         </section>
@@ -2139,6 +2139,10 @@ function refreshLatticePointMesh(): void {
   latticeHighlightPointMesh.count = highlightCount
   latticePointMesh.instanceMatrix.needsUpdate = true
   latticeHighlightPointMesh.instanceMatrix.needsUpdate = true
+  latticePointMesh.computeBoundingSphere()
+  latticePointMesh.computeBoundingBox()
+  latticeHighlightPointMesh.computeBoundingSphere()
+  latticeHighlightPointMesh.computeBoundingBox()
 }
 
 function refreshLatticeLineSegments(): void {
@@ -2495,48 +2499,38 @@ function buildSubdividedWeldedArrayQuadMesh(
 ): QuadMeshData {
   const weldedMesh = buildWeldedArrayQuadMesh(settings, arraySettings)
   const thickenedMesh = createThickenedQuadMesh(weldedMesh, arraySettings.thickness)
-  const subdividedMesh = weldQuadMeshByPosition(subdivideCatmullClark(thickenedMesh, arraySettings.subdivisions))
-  return polishQuadMeshContinuity(subdividedMesh, arraySettings.subdivisions)
+  return weldQuadMeshByPositionPreservingFaceDirections(subdivideCatmullClark(thickenedMesh, arraySettings.subdivisions))
 }
 
 function buildWeldedArrayQuadMesh(
   settings: BatwingSettings,
   arraySettings: BatwingArraySettings,
 ): QuadMeshData {
+  return weldQuadMeshByPositionPreservingFaceDirections(buildCheckerboardArrayQuadMesh(settings, arraySettings))
+}
+
+function buildCheckerboardArrayQuadMesh(
+  settings: BatwingSettings,
+  arraySettings: BatwingArraySettings,
+): QuadMeshData {
   const baseMesh = buildBatwingQuadMeshData(settings)
-  const weldedVertices: THREE.Vector3[] = []
+  const vertices: THREE.Vector3[] = []
   const quadFaces: QuadFace[] = []
-  const vertexLookup = new Map<string, number>()
-  const sourceToWelded = new Array<number>(baseMesh.vertices.length)
-  const translatedPosition = new THREE.Vector3()
 
   forEachArrayOffset(arraySettings, (offset, _instanceIndex, lengthIndex, widthIndex, heightIndex) => {
-    for (let vertexIndex = 0; vertexIndex < baseMesh.vertices.length; vertexIndex += 1) {
-      translatedPosition.copy(baseMesh.vertices[vertexIndex]).add(offset)
-      const key = getWeldKey(translatedPosition.x, translatedPosition.y, translatedPosition.z)
-      let weldedIndex = vertexLookup.get(key)
-
-      if (weldedIndex === undefined) {
-        weldedIndex = weldedVertices.length
-        vertexLookup.set(key, weldedIndex)
-        weldedVertices.push(translatedPosition.clone())
-      }
-
-      sourceToWelded[vertexIndex] = weldedIndex
+    const vertexOffset = vertices.length
+    for (const vertex of baseMesh.vertices) {
+      vertices.push(vertex.clone().add(offset))
     }
 
     const flipWinding = shouldFlipArrayCellWinding(lengthIndex, widthIndex, heightIndex)
-    for (const [a, b, c, d] of baseMesh.quadFaces) {
-      if (flipWinding) {
-        quadFaces.push([sourceToWelded[a], sourceToWelded[d], sourceToWelded[c], sourceToWelded[b]])
-      } else {
-        quadFaces.push([sourceToWelded[a], sourceToWelded[b], sourceToWelded[c], sourceToWelded[d]])
-      }
+    for (const baseFace of baseMesh.quadFaces) {
+      quadFaces.push(offsetQuadFace(flipWinding ? reverseQuadFace(baseFace) : baseFace, vertexOffset))
     }
   })
 
   return {
-    vertices: weldedVertices,
+    vertices,
     quadFaces,
   }
 }
@@ -2547,6 +2541,14 @@ function shouldFlipArrayCellWinding(
   heightIndex: number,
 ): boolean {
   return (lengthIndex + widthIndex + heightIndex) % 2 === 1
+}
+
+function reverseQuadFace([a, b, c, d]: QuadFace): QuadFace {
+  return [a, d, c, b]
+}
+
+function offsetQuadFace([a, b, c, d]: QuadFace, vertexOffset: number): QuadFace {
+  return [vertexOffset + a, vertexOffset + b, vertexOffset + c, vertexOffset + d]
 }
 
 function createThickenedQuadMesh(quadMesh: QuadMeshData, thickness: number): QuadMeshData {
@@ -2650,6 +2652,29 @@ function weldQuadMeshByPosition(quadMesh: QuadMeshData): QuadMeshData {
       sourceToWelded[c],
       sourceToWelded[d],
     ]),
+  }
+}
+
+function weldQuadMeshByPositionPreservingFaceDirections(quadMesh: QuadMeshData): QuadMeshData {
+  const sourceFaceNormals = quadMesh.quadFaces.map((quadFace) => computeQuadNormal(quadMesh.vertices, quadFace))
+  const weldedMesh = weldQuadMeshByPosition(quadMesh)
+  const quadFaces = weldedMesh.quadFaces.map((quadFace, faceIndex) => {
+    const sourceNormal = sourceFaceNormals[faceIndex]
+    if (!sourceNormal || sourceNormal.lengthSq() <= 1e-12) {
+      return quadFace
+    }
+
+    const weldedNormal = computeQuadNormal(weldedMesh.vertices, quadFace)
+    if (weldedNormal.lengthSq() > 1e-12 && weldedNormal.dot(sourceNormal) < 0) {
+      return reverseQuadFace(quadFace)
+    }
+
+    return quadFace
+  })
+
+  return {
+    vertices: weldedMesh.vertices,
+    quadFaces,
   }
 }
 
@@ -2767,17 +2792,6 @@ function applyContinuousReflectionNormals(
   }
 
   geometry.setAttribute('normal', new THREE.BufferAttribute(normalValues, 3))
-}
-
-function polishQuadMeshContinuity(quadMesh: QuadMeshData, subdivisions: number): QuadMeshData {
-  if (subdivisions <= 0) {
-    return quadMesh
-  }
-
-  return {
-    vertices: relaxQuadMeshVertices(quadMesh.vertices, quadMesh.quadFaces, 1 + subdivisions, 0.09, true),
-    quadFaces: quadMesh.quadFaces,
-  }
 }
 
 function buildReflectionNormalSourceVertices(
