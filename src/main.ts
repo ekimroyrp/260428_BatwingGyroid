@@ -2512,7 +2512,11 @@ function buildSubdividedWeldedArrayQuadMesh(
   arraySettings: BatwingArraySettings,
 ): QuadMeshData {
   const weldedMesh = buildWeldedArrayQuadMesh(settings, arraySettings)
-  const thickenedMesh = createThickenedQuadMesh(weldedMesh, arraySettings.thickness)
+  const thickenedMesh = createThickenedQuadMesh(
+    weldedMesh,
+    arraySettings.thickness,
+    buildArrayCenterWeldKeySet(arraySettings),
+  )
   return weldQuadMeshByPositionPreservingFaceDirections(subdivideCatmullClark(thickenedMesh, arraySettings.subdivisions))
 }
 
@@ -2565,7 +2569,21 @@ function offsetQuadFace([a, b, c, d]: QuadFace, vertexOffset: number): QuadFace 
   return [vertexOffset + a, vertexOffset + b, vertexOffset + c, vertexOffset + d]
 }
 
-function createThickenedQuadMesh(quadMesh: QuadMeshData, thickness: number): QuadMeshData {
+function buildArrayCenterWeldKeySet(arraySettings: BatwingArraySettings): Set<string> {
+  const centerKeys = new Set<string>()
+  forEachArrayOffset(arraySettings, (offset, _instanceIndex, lengthIndex, widthIndex, heightIndex) => {
+    if (shouldFlipArrayCellWinding(lengthIndex, widthIndex, heightIndex)) {
+      centerKeys.add(getWeldKey(offset.x, offset.y, offset.z))
+    }
+  })
+  return centerKeys
+}
+
+function createThickenedQuadMesh(
+  quadMesh: QuadMeshData,
+  thickness: number,
+  reversedThicknessNormalKeys = new Set<string>(),
+): QuadMeshData {
   const safeThickness = clampNumber(thickness, 0, MAX_THICKNESS)
   if (safeThickness <= 0.0001) {
     return quadMesh
@@ -2573,6 +2591,12 @@ function createThickenedQuadMesh(quadMesh: QuadMeshData, thickness: number): Qua
 
   const halfThickness = safeThickness / 2
   const vertexNormals = computeQuadMeshVertexNormals(quadMesh)
+  for (let index = 0; index < quadMesh.vertices.length; index += 1) {
+    const vertex = quadMesh.vertices[index]
+    if (reversedThicknessNormalKeys.has(getWeldKey(vertex.x, vertex.y, vertex.z))) {
+      vertexNormals[index].multiplyScalar(-1)
+    }
+  }
   const vertexCount = quadMesh.vertices.length
   const vertices: THREE.Vector3[] = []
   const quadFaces: QuadFace[] = []
