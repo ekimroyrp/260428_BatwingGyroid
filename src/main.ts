@@ -5,9 +5,11 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import {
   BATWING_BOX_DIMENSIONS,
   type BatwingSettings,
-  buildBatwingGeometry,
+  type QuadFace,
+  buildBatwingQuadMeshData,
   createBatwingBoxGuideGeometry,
 } from './batwingGeometry'
+import { subdivideCatmullClark, type QuadMeshData } from './catmullClark'
 import { InfiniteFadingGrid } from './infiniteGrid'
 
 type BatwingControlKey = keyof BatwingSettings
@@ -23,6 +25,7 @@ type BatwingArraySettings = {
   lengthCount: number
   widthCount: number
   heightCount: number
+  subdivisions: number
 }
 
 type ArrayControlKey = keyof BatwingArraySettings
@@ -30,8 +33,15 @@ type ArrayControlKey = keyof BatwingArraySettings
 type ArraySliderBinding = {
   key: ArrayControlKey
   fallback: number
+  min: number
+  max: number
   slider: HTMLInputElement
   valueInput: HTMLInputElement
+}
+
+type BatwingGeometrySet = {
+  meshGeometry: THREE.BufferGeometry
+  wireGeometry: THREE.BufferGeometry
 }
 
 type BatwingAppState = {
@@ -91,6 +101,7 @@ document.title = '260428_BatwingGyroid'
 const EXPORT_BASE_NAME = '260428_BatwingGyroid'
 const MAX_HISTORY_STATES = 100
 const MAX_ARRAY_COUNT = 20
+const MAX_SUBDIVISIONS = 3
 const WELD_EPSILON = 1e-5
 const DEFAULT_SETTINGS: BatwingSettings = {
   t0: 0.5,
@@ -102,6 +113,7 @@ const DEFAULT_ARRAY_SETTINGS: BatwingArraySettings = {
   lengthCount: 1,
   widthCount: 1,
   heightCount: 1,
+  subdivisions: 0,
 }
 
 const FOIL_MATERIAL_STYLE: BatwingMaterialStyle = {
@@ -229,6 +241,13 @@ app.innerHTML = `
                 <input id="height-count-value" class="value-pill value-input" type="number" inputmode="numeric" min="1" max="20" step="1" value="1" />
               </div>
               <input id="heightCountSlider" type="range" min="1" max="20" value="1" step="1" />
+            </label>
+            <label class="control" for="subdivisionsSlider">
+              <div class="control-row">
+                <span>Subdivisions</span>
+                <input id="subdivisions-value" class="value-pill value-input" type="number" inputmode="numeric" min="0" max="3" step="1" value="0" />
+              </div>
+              <input id="subdivisionsSlider" type="range" min="0" max="3" value="0" step="1" />
             </label>
           </div>
         </section>
@@ -404,20 +423,34 @@ const arraySliderBindings: ArraySliderBinding[] = [
   {
     key: 'lengthCount',
     fallback: DEFAULT_ARRAY_SETTINGS.lengthCount,
+    min: 1,
+    max: MAX_ARRAY_COUNT,
     slider: requireElement<HTMLInputElement>('#lengthCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#length-count-value'),
   },
   {
     key: 'widthCount',
     fallback: DEFAULT_ARRAY_SETTINGS.widthCount,
+    min: 1,
+    max: MAX_ARRAY_COUNT,
     slider: requireElement<HTMLInputElement>('#widthCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#width-count-value'),
   },
   {
     key: 'heightCount',
     fallback: DEFAULT_ARRAY_SETTINGS.heightCount,
+    min: 1,
+    max: MAX_ARRAY_COUNT,
     slider: requireElement<HTMLInputElement>('#heightCountSlider'),
     valueInput: requireElement<HTMLInputElement>('#height-count-value'),
+  },
+  {
+    key: 'subdivisions',
+    fallback: DEFAULT_ARRAY_SETTINGS.subdivisions,
+    min: 0,
+    max: MAX_SUBDIVISIONS,
+    slider: requireElement<HTMLInputElement>('#subdivisionsSlider'),
+    valueInput: requireElement<HTMLInputElement>('#subdivisions-value'),
   },
 ]
 
@@ -540,17 +573,15 @@ const batwingMaterial = new THREE.MeshPhysicalMaterial({
 })
 installEggIridescenceShader(batwingMaterial, eggIridescenceState)
 
-const batwingMesh = new THREE.Mesh(
-  buildWeldedArrayGeometry(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS),
-  batwingMaterial,
-)
+const initialGeometrySet = buildBatwingGeometrySet(DEFAULT_SETTINGS, DEFAULT_ARRAY_SETTINGS)
+const batwingMesh = new THREE.Mesh(initialGeometrySet.meshGeometry, batwingMaterial)
 batwingMesh.castShadow = true
 batwingMesh.receiveShadow = true
 batwingMesh.frustumCulled = false
 scene.add(batwingMesh)
 
 const wireOverlay = new THREE.LineSegments(
-  buildWeldedWireGeometry(batwingMesh.geometry),
+  initialGeometrySet.wireGeometry,
   new THREE.LineBasicMaterial({
     color: 0x37506c,
     transparent: true,
@@ -605,9 +636,9 @@ function readSliderNumber(input: HTMLInputElement, fallback: number): number {
   return Number.isFinite(value) ? value : fallback
 }
 
-function readArraySliderNumber(input: HTMLInputElement, fallback: number): number {
-  const value = Math.round(readSliderNumber(input, fallback))
-  return clampNumber(value, 1, MAX_ARRAY_COUNT)
+function readArraySliderNumber(binding: ArraySliderBinding): number {
+  const value = Math.round(readSliderNumber(binding.slider, binding.fallback))
+  return clampNumber(value, binding.min, binding.max)
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -687,7 +718,7 @@ function getCurrentSettings(): BatwingSettings {
 function getCurrentArraySettings(): BatwingArraySettings {
   return arraySliderBindings.reduce<BatwingArraySettings>(
     (settings, binding) => {
-      settings[binding.key] = readArraySliderNumber(binding.slider, binding.fallback)
+      settings[binding.key] = readArraySliderNumber(binding)
       return settings
     },
     { ...DEFAULT_ARRAY_SETTINGS },
@@ -708,6 +739,7 @@ function cloneArraySettings(settings: BatwingArraySettings): BatwingArraySetting
     lengthCount: settings.lengthCount,
     widthCount: settings.widthCount,
     heightCount: settings.heightCount,
+    subdivisions: settings.subdivisions,
   }
 }
 
@@ -740,6 +772,7 @@ function appStatesEqual(a: BatwingAppState, b: BatwingAppState): boolean {
     a.arraySettings.lengthCount === b.arraySettings.lengthCount &&
     a.arraySettings.widthCount === b.arraySettings.widthCount &&
     a.arraySettings.heightCount === b.arraySettings.heightCount &&
+    a.arraySettings.subdivisions === b.arraySettings.subdivisions &&
     a.showWireframe === b.showWireframe &&
     a.reflectionsEnabled === b.reflectionsEnabled &&
     a.showBoxGuide === b.showBoxGuide
@@ -916,7 +949,7 @@ function bindSlider(binding: SliderBinding): void {
 function bindArraySlider(binding: ArraySliderBinding): void {
   const syncFromSlider = (): void => {
     beginControlHistoryEdit()
-    const value = readArraySliderNumber(binding.slider, binding.fallback)
+    const value = readArraySliderNumber(binding)
     binding.slider.value = `${value}`
     binding.valueInput.value = `${value}`
     updateRangeProgress(binding.slider)
@@ -952,7 +985,7 @@ function bindArraySlider(binding: ArraySliderBinding): void {
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      binding.valueInput.value = `${readArraySliderNumber(binding.slider, binding.fallback)}`
+      binding.valueInput.value = `${readArraySliderNumber(binding)}`
       clearControlHistoryEdit()
       binding.valueInput.blur()
     }
@@ -962,14 +995,13 @@ function bindArraySlider(binding: ArraySliderBinding): void {
 function rebuildBatwing(): void {
   const settings = getCurrentSettings()
   const arraySettings = getCurrentArraySettings()
-  const nextGeometry = buildWeldedArrayGeometry(settings, arraySettings)
-  const nextWireGeometry = buildWeldedWireGeometry(nextGeometry)
+  const nextGeometrySet = buildBatwingGeometrySet(settings, arraySettings)
 
   batwingMesh.geometry.dispose()
-  batwingMesh.geometry = nextGeometry
+  batwingMesh.geometry = nextGeometrySet.meshGeometry
 
   wireOverlay.geometry.dispose()
-  wireOverlay.geometry = nextWireGeometry
+  wireOverlay.geometry = nextGeometrySet.wireGeometry
 
   boxGuide.geometry.dispose()
   boxGuide.geometry = buildArrayBoxGuideGeometry(arraySettings)
@@ -1002,14 +1034,26 @@ function getArrayOffset(
 
 function forEachArrayOffset(
   settings: BatwingArraySettings,
-  callback: (offset: THREE.Vector3, instanceIndex: number) => void,
+  callback: (
+    offset: THREE.Vector3,
+    instanceIndex: number,
+    lengthIndex: number,
+    widthIndex: number,
+    heightIndex: number,
+  ) => void,
 ): void {
   let instanceIndex = 0
 
   for (let heightIndex = 0; heightIndex < settings.heightCount; heightIndex += 1) {
     for (let widthIndex = 0; widthIndex < settings.widthCount; widthIndex += 1) {
       for (let lengthIndex = 0; lengthIndex < settings.lengthCount; lengthIndex += 1) {
-        callback(getArrayOffset(lengthIndex, widthIndex, heightIndex, settings), instanceIndex)
+        callback(
+          getArrayOffset(lengthIndex, widthIndex, heightIndex, settings),
+          instanceIndex,
+          lengthIndex,
+          widthIndex,
+          heightIndex,
+        )
         instanceIndex += 1
       }
     }
@@ -1037,108 +1081,447 @@ function buildArrayLineGeometry(baseGeometry: THREE.BufferGeometry, settings: Ba
   return geometry
 }
 
-function buildWeldedArrayGeometry(
+function buildBatwingGeometrySet(
   settings: BatwingSettings,
   arraySettings: BatwingArraySettings,
-): THREE.BufferGeometry {
-  const baseGeometry = buildBatwingGeometry(settings)
-  const basePosition = baseGeometry.getAttribute('position') as THREE.BufferAttribute
-  const baseIndex = baseGeometry.getIndex()
-  if (!baseIndex) {
-    baseGeometry.dispose()
-    throw new Error('Batwing base geometry must be indexed before array welding.')
+): BatwingGeometrySet {
+  const quadMesh = buildSubdividedWeldedArrayQuadMesh(settings, arraySettings)
+  return {
+    meshGeometry: buildGeometryFromQuadMesh(quadMesh, arraySettings),
+    wireGeometry: buildQuadWireGeometry(quadMesh),
   }
+}
 
-  const weldedPositions: number[] = []
-  const weldedIndices: number[] = []
+function buildSubdividedWeldedArrayQuadMesh(
+  settings: BatwingSettings,
+  arraySettings: BatwingArraySettings,
+): QuadMeshData {
+  const weldedMesh = buildWeldedArrayQuadMesh(settings, arraySettings)
+  const subdividedMesh = weldQuadMeshByPosition(subdivideCatmullClark(weldedMesh, arraySettings.subdivisions))
+  return polishQuadMeshContinuity(subdividedMesh, arraySettings.subdivisions)
+}
+
+function buildWeldedArrayQuadMesh(
+  settings: BatwingSettings,
+  arraySettings: BatwingArraySettings,
+): QuadMeshData {
+  const baseMesh = buildBatwingQuadMeshData(settings)
+  const weldedVertices: THREE.Vector3[] = []
+  const quadFaces: QuadFace[] = []
   const vertexLookup = new Map<string, number>()
-  const sourceToWelded = new Array<number>(basePosition.count)
+  const sourceToWelded = new Array<number>(baseMesh.vertices.length)
   const translatedPosition = new THREE.Vector3()
-  let rawVertexCount = 0
 
-  forEachArrayOffset(arraySettings, (offset) => {
-    for (let vertexIndex = 0; vertexIndex < basePosition.count; vertexIndex += 1) {
-      translatedPosition.fromBufferAttribute(basePosition, vertexIndex).add(offset)
+  forEachArrayOffset(arraySettings, (offset, _instanceIndex, lengthIndex, widthIndex, heightIndex) => {
+    for (let vertexIndex = 0; vertexIndex < baseMesh.vertices.length; vertexIndex += 1) {
+      translatedPosition.copy(baseMesh.vertices[vertexIndex]).add(offset)
       const key = getWeldKey(translatedPosition.x, translatedPosition.y, translatedPosition.z)
       let weldedIndex = vertexLookup.get(key)
 
       if (weldedIndex === undefined) {
-        weldedIndex = weldedPositions.length / 3
+        weldedIndex = weldedVertices.length
         vertexLookup.set(key, weldedIndex)
-        weldedPositions.push(translatedPosition.x, translatedPosition.y, translatedPosition.z)
+        weldedVertices.push(translatedPosition.clone())
       }
 
       sourceToWelded[vertexIndex] = weldedIndex
-      rawVertexCount += 1
     }
 
-    for (let indexOffset = 0; indexOffset < baseIndex.count; indexOffset += 1) {
-      weldedIndices.push(sourceToWelded[baseIndex.getX(indexOffset)])
+    const flipWinding = shouldFlipArrayCellWinding(lengthIndex, widthIndex, heightIndex)
+    for (const [a, b, c, d] of baseMesh.quadFaces) {
+      if (flipWinding) {
+        quadFaces.push([sourceToWelded[a], sourceToWelded[d], sourceToWelded[c], sourceToWelded[b]])
+      } else {
+        quadFaces.push([sourceToWelded[a], sourceToWelded[b], sourceToWelded[c], sourceToWelded[d]])
+      }
     }
   })
 
-  baseGeometry.dispose()
+  return {
+    vertices: weldedVertices,
+    quadFaces,
+  }
+}
 
+function shouldFlipArrayCellWinding(
+  lengthIndex: number,
+  widthIndex: number,
+  heightIndex: number,
+): boolean {
+  return (lengthIndex + widthIndex + heightIndex) % 2 === 1
+}
+
+function buildGeometryFromQuadMesh(
+  quadMesh: QuadMeshData,
+  arraySettings: BatwingArraySettings,
+): THREE.BufferGeometry {
+  validateFiniteVertices(quadMesh.vertices)
+
+  const positions = new Float32Array(quadMesh.vertices.length * 3)
+  for (let index = 0; index < quadMesh.vertices.length; index += 1) {
+    const position = quadMesh.vertices[index]
+    positions[index * 3 + 0] = position.x
+    positions[index * 3 + 1] = position.y
+    positions[index * 3 + 2] = position.z
+  }
+
+  const indices = triangulateQuadFaces(quadMesh.quadFaces)
   const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(weldedPositions, 3))
-  geometry.setIndex(weldedIndices)
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
   geometry.computeVertexNormals()
+  applyContinuousReflectionNormals(geometry, quadMesh, arraySettings.subdivisions)
   geometry.computeBoundingSphere()
   geometry.userData.batwing = {
     welded: true,
-    rawVertexCount,
-    vertexCount: weldedPositions.length / 3,
-    indexCount: weldedIndices.length,
+    rawVertexCount: getArrayInstanceCount(arraySettings) * 33,
+    vertexCount: quadMesh.vertices.length,
+    indexCount: indices.length,
+    quadCount: quadMesh.quadFaces.length,
     instanceCount: getArrayInstanceCount(arraySettings),
+    subdivisions: arraySettings.subdivisions,
   }
   return geometry
 }
 
-function buildWeldedWireGeometry(sourceGeometry: THREE.BufferGeometry): THREE.BufferGeometry {
-  const sourcePosition = sourceGeometry.getAttribute('position') as THREE.BufferAttribute
-  const sourceIndex = sourceGeometry.getIndex()
-  const edgeLookup = new Set<string>()
-  const edgePairs: [number, number][] = []
+function weldQuadMeshByPosition(quadMesh: QuadMeshData): QuadMeshData {
+  const weldedVertices: THREE.Vector3[] = []
+  const vertexLookup = new Map<string, number>()
+  const sourceToWelded = new Array<number>(quadMesh.vertices.length)
+
+  for (let vertexIndex = 0; vertexIndex < quadMesh.vertices.length; vertexIndex += 1) {
+    const vertex = quadMesh.vertices[vertexIndex]
+    const key = getWeldKey(vertex.x, vertex.y, vertex.z)
+    let weldedIndex = vertexLookup.get(key)
+
+    if (weldedIndex === undefined) {
+      weldedIndex = weldedVertices.length
+      vertexLookup.set(key, weldedIndex)
+      weldedVertices.push(vertex.clone())
+    }
+
+    sourceToWelded[vertexIndex] = weldedIndex
+  }
+
+  return {
+    vertices: weldedVertices,
+    quadFaces: quadMesh.quadFaces.map(([a, b, c, d]) => [
+      sourceToWelded[a],
+      sourceToWelded[b],
+      sourceToWelded[c],
+      sourceToWelded[d],
+    ]),
+  }
+}
+
+function applyContinuousReflectionNormals(
+  geometry: THREE.BufferGeometry,
+  quadMesh: QuadMeshData,
+  subdivisions: number,
+): void {
+  const computedNormals = geometry.getAttribute('normal') as THREE.BufferAttribute | undefined
+  const normalSourceVertices = buildReflectionNormalSourceVertices(quadMesh, subdivisions)
+  const normals = Array.from({ length: quadMesh.vertices.length }, (_value, index) => {
+    if (!computedNormals) {
+      return new THREE.Vector3()
+    }
+
+    return new THREE.Vector3(
+      computedNormals.getX(index),
+      computedNormals.getY(index),
+      computedNormals.getZ(index),
+    )
+  })
+  const quadNormalSums = Array.from({ length: quadMesh.vertices.length }, () => new THREE.Vector3())
+
+  for (const quadFace of quadMesh.quadFaces) {
+    const quadNormal = computeQuadNormal(normalSourceVertices, quadFace)
+    if (quadNormal.lengthSq() <= 1e-12) {
+      continue
+    }
+
+    for (const vertexIndex of quadFace) {
+      quadNormalSums[vertexIndex].add(quadNormal)
+    }
+  }
+
+  for (let index = 0; index < normals.length; index += 1) {
+    if (quadNormalSums[index].lengthSq() > 1e-12) {
+      normals[index].copy(quadNormalSums[index]).normalize()
+    } else if (normals[index].lengthSq() > 1e-12) {
+      normals[index].normalize()
+    } else {
+      normals[index].set(0, 1, 0)
+    }
+  }
+
+  averageNormalsByPosition(normals, quadMesh.vertices)
+
+  if (subdivisions > 0) {
+    relaxNormalsAcrossQuadEdges(normals, quadMesh.quadFaces, 4 + subdivisions * 2, 0.62)
+  }
+
+  const normalValues = new Float32Array(normals.length * 3)
+  for (let index = 0; index < normals.length; index += 1) {
+    normalValues[index * 3 + 0] = normals[index].x
+    normalValues[index * 3 + 1] = normals[index].y
+    normalValues[index * 3 + 2] = normals[index].z
+  }
+
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normalValues, 3))
+}
+
+function polishQuadMeshContinuity(quadMesh: QuadMeshData, subdivisions: number): QuadMeshData {
+  if (subdivisions <= 0) {
+    return quadMesh
+  }
+
+  return {
+    vertices: relaxQuadMeshVertices(quadMesh.vertices, quadMesh.quadFaces, 1 + subdivisions, 0.09, true),
+    quadFaces: quadMesh.quadFaces,
+  }
+}
+
+function buildReflectionNormalSourceVertices(
+  quadMesh: QuadMeshData,
+  subdivisions: number,
+): THREE.Vector3[] {
+  if (subdivisions <= 0) {
+    return quadMesh.vertices
+  }
+
+  return relaxQuadMeshVertices(quadMesh.vertices, quadMesh.quadFaces, 5 + subdivisions * 3, 0.22, false)
+}
+
+function computeQuadNormal(vertices: readonly THREE.Vector3[], quadFace: QuadFace): THREE.Vector3 {
+  const normal = new THREE.Vector3()
+
+  for (let index = 0; index < quadFace.length; index += 1) {
+    const current = vertices[quadFace[index]]
+    const next = vertices[quadFace[(index + 1) % quadFace.length]]
+    normal.x += (current.y - next.y) * (current.z + next.z)
+    normal.y += (current.z - next.z) * (current.x + next.x)
+    normal.z += (current.x - next.x) * (current.y + next.y)
+  }
+
+  if (normal.lengthSq() > 1e-12) {
+    return normal.normalize()
+  }
+
+  const [a, b, c] = quadFace
+  return new THREE.Vector3()
+    .subVectors(vertices[b], vertices[a])
+    .cross(new THREE.Vector3().subVectors(vertices[c], vertices[a]))
+    .normalize()
+}
+
+function averageNormalsByPosition(normals: THREE.Vector3[], vertices: readonly THREE.Vector3[]): void {
+  const normalSums = new Map<string, THREE.Vector3>()
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    const vertex = vertices[index]
+    const key = getWeldKey(vertex.x, vertex.y, vertex.z)
+    const normalSum = normalSums.get(key)
+    if (normalSum) {
+      normalSum.add(normals[index])
+    } else {
+      normalSums.set(key, normals[index].clone())
+    }
+  }
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    const vertex = vertices[index]
+    const normalSum = normalSums.get(getWeldKey(vertex.x, vertex.y, vertex.z))
+    if (normalSum && normalSum.lengthSq() > 1e-12) {
+      normals[index].copy(normalSum).normalize()
+    }
+  }
+}
+
+function relaxNormalsAcrossQuadEdges(
+  normals: THREE.Vector3[],
+  quadFaces: readonly QuadFace[],
+  iterations: number,
+  amount: number,
+): void {
+  const neighbors = buildQuadVertexNeighbors(normals.length, quadFaces)
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const relaxedNormals = normals.map((normal, vertexIndex) => {
+      const neighborIndices = neighbors[vertexIndex]
+      if (neighborIndices.size === 0) {
+        return normal.clone()
+      }
+
+      const neighborAverage = new THREE.Vector3()
+      for (const neighborIndex of neighborIndices) {
+        neighborAverage.add(normals[neighborIndex])
+      }
+      neighborAverage.multiplyScalar(1 / neighborIndices.size)
+
+      return normal.clone().lerp(neighborAverage.normalize(), amount).normalize()
+    })
+
+    for (let index = 0; index < normals.length; index += 1) {
+      normals[index].copy(relaxedNormals[index])
+    }
+  }
+}
+
+function relaxQuadMeshVertices(
+  vertices: readonly THREE.Vector3[],
+  quadFaces: readonly QuadFace[],
+  iterations: number,
+  amount: number,
+  preserveBoundary: boolean,
+): THREE.Vector3[] {
+  const neighbors = buildQuadVertexNeighbors(vertices.length, quadFaces)
+  const boundaryVertices = preserveBoundary ? buildBoundaryVertexSet(quadFaces) : new Set<number>()
+  let relaxedVertices = vertices.map((vertex) => vertex.clone())
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const nextVertices = relaxedVertices.map((vertex, vertexIndex) => {
+      const neighborIndices = neighbors[vertexIndex]
+      if (neighborIndices.size === 0 || boundaryVertices.has(vertexIndex)) {
+        return vertex.clone()
+      }
+
+      const neighborAverage = new THREE.Vector3()
+      for (const neighborIndex of neighborIndices) {
+        neighborAverage.add(relaxedVertices[neighborIndex])
+      }
+      neighborAverage.multiplyScalar(1 / neighborIndices.size)
+
+      return vertex.clone().lerp(neighborAverage, amount)
+    })
+
+    relaxedVertices = nextVertices
+  }
+
+  return relaxedVertices
+}
+
+function buildBoundaryVertexSet(quadFaces: readonly QuadFace[]): Set<number> {
+  const edgeUseCounts = new Map<string, { a: number; b: number; count: number }>()
 
   const addEdge = (a: number, b: number): void => {
     const min = Math.min(a, b)
     const max = Math.max(a, b)
     const key = `${min},${max}`
-    if (edgeLookup.has(key)) {
+    const existingEdge = edgeUseCounts.get(key)
+    if (existingEdge) {
+      existingEdge.count += 1
       return
     }
 
-    edgeLookup.add(key)
-    edgePairs.push([a, b])
+    edgeUseCounts.set(key, { a, b, count: 1 })
   }
 
-  if (sourceIndex) {
-    for (let index = 0; index < sourceIndex.count; index += 3) {
-      const a = sourceIndex.getX(index)
-      const b = sourceIndex.getX(index + 1)
-      const c = sourceIndex.getX(index + 2)
-      addEdge(a, b)
-      addEdge(b, c)
-      addEdge(c, a)
+  for (const [a, b, c, d] of quadFaces) {
+    addEdge(a, b)
+    addEdge(b, c)
+    addEdge(c, d)
+    addEdge(d, a)
+  }
+
+  const boundaryVertices = new Set<number>()
+  for (const edge of edgeUseCounts.values()) {
+    if (edge.count === 1) {
+      boundaryVertices.add(edge.a)
+      boundaryVertices.add(edge.b)
     }
   }
 
+  return boundaryVertices
+}
+
+function buildQuadVertexNeighbors(vertexCount: number, quadFaces: readonly QuadFace[]): Set<number>[] {
+  const neighbors = Array.from({ length: vertexCount }, () => new Set<number>())
+
+  const addNeighborPair = (a: number, b: number): void => {
+    if (a === b) {
+      return
+    }
+
+    neighbors[a].add(b)
+    neighbors[b].add(a)
+  }
+
+  for (const [a, b, c, d] of quadFaces) {
+    addNeighborPair(a, b)
+    addNeighborPair(b, c)
+    addNeighborPair(c, d)
+    addNeighborPair(d, a)
+  }
+
+  return neighbors
+}
+
+function buildQuadWireGeometry(quadMesh: QuadMeshData): THREE.BufferGeometry {
+  const edgePairs = buildUniqueQuadEdges(quadMesh.quadFaces)
   const positions = new Float32Array(edgePairs.length * 2 * 3)
+
   for (let edgeIndex = 0; edgeIndex < edgePairs.length; edgeIndex += 1) {
     const [a, b] = edgePairs[edgeIndex]
+    const start = quadMesh.vertices[a]
+    const end = quadMesh.vertices[b]
     const offset = edgeIndex * 6
-    positions[offset + 0] = sourcePosition.getX(a)
-    positions[offset + 1] = sourcePosition.getY(a)
-    positions[offset + 2] = sourcePosition.getZ(a)
-    positions[offset + 3] = sourcePosition.getX(b)
-    positions[offset + 4] = sourcePosition.getY(b)
-    positions[offset + 5] = sourcePosition.getZ(b)
+    positions[offset + 0] = start.x
+    positions[offset + 1] = start.y
+    positions[offset + 2] = start.z
+    positions[offset + 3] = end.x
+    positions[offset + 4] = end.y
+    positions[offset + 5] = end.z
   }
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.computeBoundingSphere()
   return geometry
+}
+
+function triangulateQuadFaces(quadFaces: readonly QuadFace[]): number[] {
+  const indices: number[] = []
+  for (const [a, b, c, d] of quadFaces) {
+    indices.push(a, b, c, a, c, d)
+  }
+
+  return indices
+}
+
+function buildUniqueQuadEdges(quadFaces: readonly QuadFace[]): [number, number][] {
+  const edges: [number, number][] = []
+  const seen = new Set<string>()
+
+  const addEdge = (a: number, b: number): void => {
+    const min = Math.min(a, b)
+    const max = Math.max(a, b)
+    const key = `${min},${max}`
+    if (seen.has(key)) {
+      return
+    }
+
+    seen.add(key)
+    edges.push([a, b])
+  }
+
+  for (const [a, b, c, d] of quadFaces) {
+    addEdge(a, b)
+    addEdge(b, c)
+    addEdge(c, d)
+    addEdge(d, a)
+  }
+
+  return edges
+}
+
+function validateFiniteVertices(vertices: readonly THREE.Vector3[]): void {
+  for (let index = 0; index < vertices.length; index += 1) {
+    const vertex = vertices[index]
+    if (!Number.isFinite(vertex.x) || !Number.isFinite(vertex.y) || !Number.isFinite(vertex.z)) {
+      throw new Error(`Batwing geometry produced a non-finite vertex at index ${index}.`)
+    }
+  }
 }
 
 function buildArrayBoxGuideGeometry(arraySettings: BatwingArraySettings): THREE.BufferGeometry {

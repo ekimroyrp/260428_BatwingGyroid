@@ -7,12 +7,17 @@ export interface BatwingSettings {
   t3: number
 }
 
-type QuadFace = [number, number, number, number]
+export type QuadFace = [number, number, number, number]
 type EdgePair = [number, number]
 
 type BatwingMeshData = {
   vertices: THREE.Vector3[]
   indices: number[]
+  quadFaces: QuadFace[]
+}
+
+export type BatwingQuadMeshData = {
+  vertices: THREE.Vector3[]
   quadFaces: QuadFace[]
 }
 
@@ -52,6 +57,14 @@ export function buildBatwingGeometry(settings: BatwingSettings): THREE.BufferGeo
   }
 
   return geometry
+}
+
+export function buildBatwingQuadMeshData(settings: BatwingSettings): BatwingQuadMeshData {
+  const meshData = buildBatwingMeshData(settings)
+  return {
+    vertices: meshData.vertices.map((vertex) => vertex.clone()),
+    quadFaces: meshData.quadFaces.map(([a, b, c, d]) => [a, b, c, d]),
+  }
 }
 
 export function buildBatwingWireGeometry(settings: BatwingSettings): THREE.BufferGeometry {
