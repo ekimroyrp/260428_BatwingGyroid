@@ -379,6 +379,9 @@ app.innerHTML = `
               </div>
               <input id="heightDivisionSlider" type="range" min="1" max="20" value="1" step="1" />
             </label>
+            <div class="control">
+              <button id="latticeResetButton" class="pill-button control-button-wide" type="button">Reset</button>
+            </div>
           </div>
         </section>
         <section class="panel-section">
@@ -392,7 +395,7 @@ app.innerHTML = `
             </label>
             <label class="toggle-control" for="boxGuideToggle">
               <span>Bounding Boxes</span>
-              <input id="boxGuideToggle" type="checkbox" checked />
+              <input id="boxGuideToggle" type="checkbox" />
             </label>
             <label class="toggle-control" for="latticeControlsToggle">
               <span>Lattice Controls</span>
@@ -511,6 +514,7 @@ const latticeMarquee = requireElement<HTMLDivElement>('#lattice-marquee')
 const uiPanel = requireElement<HTMLDivElement>('#ui-panel')
 const uiHandleTop = requireElement<HTMLDivElement>('#ui-handle')
 const collapseToggle = requireElement<HTMLButtonElement>('#collapseToggle')
+const latticeResetButton = requireElement<HTMLButtonElement>('#latticeResetButton')
 const exportObjButton = requireElement<HTMLButtonElement>('#exportObjButton')
 const exportGlbButton = requireElement<HTMLButtonElement>('#exportGlbButton')
 const exportScreenshotButton = requireElement<HTMLButtonElement>('#exportScreenshotButton')
@@ -1211,6 +1215,19 @@ function applyLatticePointPositions(positions: number[] | null): void {
       positions[index * 3 + 1],
       positions[index * 3 + 2],
     )
+  }
+
+  refreshLatticeVisuals()
+  rebuildCurrentDeformedGeometry()
+}
+
+function resetLatticePointsToRestPositions(): void {
+  if (!latticeState) {
+    return
+  }
+
+  for (const point of latticeState.points) {
+    point.position.copy(point.restPosition)
   }
 
   refreshLatticeVisuals()
@@ -3556,6 +3573,12 @@ for (const binding of latticeSliderBindings) {
   bindLatticeSlider(binding)
   updateRangeProgress(binding.slider)
 }
+
+latticeResetButton.addEventListener('click', () => {
+  const previousState = captureAppState()
+  resetLatticePointsToRestPositions()
+  commitHistoryCheckpoint(previousState)
+})
 
 canvas.addEventListener('pointerdown', onLatticePointerDown)
 canvas.addEventListener('pointermove', onLatticePointerMove)
