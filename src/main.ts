@@ -2638,7 +2638,7 @@ function buildSubdividedWeldedArrayQuadMesh(
   const thickenedMesh = createThickenedQuadMesh(
     weldedMesh,
     arraySettings.thickness,
-    buildArrayCenterWeldKeySet(arraySettings),
+    buildArrayCenterThicknessNormalMap(arraySettings),
   )
   return weldQuadMeshByPositionPreservingFaceDirections(subdivideCatmullClark(thickenedMesh, arraySettings.subdivisions))
 }
@@ -2692,20 +2692,19 @@ function offsetQuadFace([a, b, c, d]: QuadFace, vertexOffset: number): QuadFace 
   return [vertexOffset + a, vertexOffset + b, vertexOffset + c, vertexOffset + d]
 }
 
-function buildArrayCenterWeldKeySet(arraySettings: BatwingArraySettings): Set<string> {
-  const centerKeys = new Set<string>()
+function buildArrayCenterThicknessNormalMap(arraySettings: BatwingArraySettings): Map<string, THREE.Vector3> {
+  const centerNormals = new Map<string, THREE.Vector3>()
   forEachArrayOffset(arraySettings, (offset, _instanceIndex, lengthIndex, widthIndex, heightIndex) => {
-    if (shouldFlipArrayCellWinding(lengthIndex, widthIndex, heightIndex)) {
-      centerKeys.add(getWeldKey(offset.x, offset.y, offset.z))
-    }
+    const yDirection = shouldFlipArrayCellWinding(lengthIndex, widthIndex, heightIndex) ? -1 : 1
+    centerNormals.set(getWeldKey(offset.x, offset.y, offset.z), new THREE.Vector3(0, yDirection, 0))
   })
-  return centerKeys
+  return centerNormals
 }
 
 function createThickenedQuadMesh(
   quadMesh: QuadMeshData,
   thickness: number,
-  reversedThicknessNormalKeys = new Set<string>(),
+  forcedThicknessNormalMap = new Map<string, THREE.Vector3>(),
 ): QuadMeshData {
   const safeThickness = clampNumber(thickness, 0, MAX_THICKNESS)
   if (safeThickness <= 0.0001) {
@@ -2716,8 +2715,9 @@ function createThickenedQuadMesh(
   const vertexNormals = computeQuadMeshVertexNormals(quadMesh)
   for (let index = 0; index < quadMesh.vertices.length; index += 1) {
     const vertex = quadMesh.vertices[index]
-    if (reversedThicknessNormalKeys.has(getWeldKey(vertex.x, vertex.y, vertex.z))) {
-      vertexNormals[index].multiplyScalar(-1)
+    const forcedNormal = forcedThicknessNormalMap.get(getWeldKey(vertex.x, vertex.y, vertex.z))
+    if (forcedNormal) {
+      vertexNormals[index].copy(forcedNormal)
     }
   }
   const vertexCount = quadMesh.vertices.length
